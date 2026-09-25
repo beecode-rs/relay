@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Relay",
+    "slug": "relay",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./resource/icon/icon.png",
+    "scheme": "relay",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./resource/icon/icon.png",
+      "bundleIdentifier": "com.milos.becode.rs.relay",
+      "buildNumber": "0.1.0",
+      "entitlements": {
+        "keychain-access-groups": ["$(AppIdentifierPrefix)com.beecode.devicekeys"]
+      }
+    },
+    "android": {
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#101010",
+        "foregroundImage": "./resource/icon/adaptive-icon.png",
+        "monochromeImage": "./resource/icon/app-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize",
+      "package": "com.milos.becode.rs.relay"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./resource/icon/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#101010",
+          "image": "./resource/icon/splash-icon.png",
+          "imageWidth": 200
+        }
+      ],
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "beecodeTeamId": ""
+    }
+  }
+}

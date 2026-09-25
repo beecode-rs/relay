@@ -1,0 +1,10 @@
+export const constants = {
+  S_IFBLK: 0o60000,
+  S_IFCHR: 0o20000,
+  S_IFDIR: 0o40000,
+  S_IFIFO: 0o10000,
+  S_IFLNK: 0o120000,
+  S_IFMT: 0o170000,
+  S_IFREG: 0o100000,
+  S_IFSOCK: 0o140000,
+}
