@@ -1,4 +1,5 @@
 import type { IBuffer, IBufferCell, IBufferLine, Terminal } from '@xterm/headless';
+import { terminalGlyphUtil } from '@/services/terminal/terminal-glyphs';
 import { terminalPaletteUtil } from '@/services/terminal/terminal-palette';
 
 export type StyledSegment = {
@@ -163,7 +164,7 @@ const serializeRow = (line: IBufferLine | undefined, cols: number): StyledRow =>
       return accumulated;
     }
     const chars = cell.getChars();
-    const text = chars.length === 0 ? ' ' : chars;
+    const text = chars.length === 0 ? ' ' : terminalGlyphUtil.toRenderableText(chars);
     const style = styleOfCell(cell);
     const previous = accumulated[accumulated.length - 1];
     if (previous !== undefined && isSameStyle(previous, style)) {

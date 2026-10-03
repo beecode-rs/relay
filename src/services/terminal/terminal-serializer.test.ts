@@ -79,6 +79,14 @@ describe('serializeTerminal', () => {
     ]);
   });
 
+  it('substitutes glyphs the terminal font cannot render', async () => {
+    const terminal = await createWrittenTerminal('⏵⏵ bypass permissions on ✓');
+    const snapshot = serializeTerminal(terminal);
+    expect(snapshot.rows[0]?.segments).toEqual([
+      { text: '▸▸ bypass permissions on √', bold: false, underline: false, inverse: false },
+    ]);
+  });
+
   it('appends wide characters once without a continuation gap', async () => {
     const terminal = await createWrittenTerminal('a你b');
     const snapshot = serializeTerminal(terminal);

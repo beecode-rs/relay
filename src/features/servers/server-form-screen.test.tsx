@@ -27,6 +27,11 @@ jest.mock('react-native-keyboard-controller', () => {
   return require('react-native-keyboard-controller/jest');
 });
 
+jest.mock('react-native-safe-area-context', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- jest.mock factory cannot reference out-of-scope imports
+  return require('react-native-safe-area-context/jest/mock').default;
+});
+
 const mockDeviceKeyInfo: DeviceKeyInfo = {
   comment: 'beecode@ios-1a2b3c',
   createdAt: '2026-01-01T00:00:00.000Z',

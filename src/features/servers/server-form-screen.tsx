@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { constant } from '@/constants/constant';
 import { FolderBrowserModal } from '@/components/folder-browser-modal';
@@ -219,6 +220,7 @@ export function ServerFormScreen({
   createTestClient = createSsh2ShellClient,
 }: ServerFormScreenProps) {
   const theme = useTheme();
+  const safeAreaInsets = useSafeAreaInsets();
   const [form, setForm] = useState<ServerFormState>(() => {
     return { ...emptyForm, tmuxPrefixText: serverProfileTmuxUtil.generatePrefix() };
   });
@@ -533,7 +535,11 @@ export function ServerFormScreen({
     <ThemedView style={styles.container}>
       <KeyboardAwareScrollView
         bottomOffset={16}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          // Keep the actions clear of the Android software nav bar (edge-to-edge).
+          { paddingBottom: Math.max(safeAreaInsets.bottom, 16) },
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         <ThemedText type="subtitle">{isEditing ? 'Edit Instance' : 'Add Instance'}</ThemedText>

@@ -7,7 +7,17 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Keyboard, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import {
+  Alert,
+  AppState,
+  Keyboard,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import type { KeyboardEvent, TextLayoutEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -758,6 +768,27 @@ export function TerminalScreen({
     });
   }, [applyTmuxListResult, terminalTarget, activeSession, sessionState.status]);
 
+  // Session switches made inside tmux (prefix keys) are invisible to the app,
+  // and killing the app from the app switcher always passes through the
+  // background state first: re-list then so the remembered session matches
+  // where the user actually was on the next launch.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState !== 'background') {
+        return;
+      }
+      if (terminalTarget === null || activeSession === null || activeSession.status !== 'connected') {
+        return;
+      }
+      void activeSession.listTmuxSessions().then((result) => {
+        applyTmuxListResult(terminalTarget.profileId, result);
+      });
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [applyTmuxListResult, terminalTarget, activeSession]);
+
   const handleOpenDrawer = () => {
     setIsDrawerOpen(true);
     void reloadProfiles();
@@ -775,6 +806,11 @@ export function TerminalScreen({
   const handleOpenSettings = () => {
     setIsDrawerOpen(false);
     router.navigate('/settings');
+  };
+
+  const handleOpenAbout = () => {
+    setIsDrawerOpen(false);
+    router.navigate('/about');
   };
 
   const handleAddServer = () => {
@@ -1205,6 +1241,7 @@ export function TerminalScreen({
         onDeleteSession={handleDrawerDeleteSession}
         onDisconnectServer={handleDrawerDisconnectServer}
         onEditServer={handleDrawerEditServer}
+        onOpenAbout={handleOpenAbout}
         onOpenSettings={handleOpenSettings}
         onRefreshServer={refreshTmuxListing}
         onRemoveServer={handleDrawerRemoveServer}

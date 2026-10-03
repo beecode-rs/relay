@@ -54,6 +54,7 @@ const createProps = (overrides: Partial<ServersDrawerProps> = {}): ServersDrawer
     onClose: jest.fn(),
     onAddServer: jest.fn(),
     onOpenSettings: jest.fn(),
+    onOpenAbout: jest.fn(),
     onSelectServer: jest.fn(),
     onSelectSession: jest.fn(),
     onCreateSession: jest.fn(),
@@ -459,5 +460,12 @@ describe('ServersDrawer footer and header', () => {
     const { getByLabelText } = await render(<ServersDrawer {...createProps({ onOpenSettings })} />);
     await fireEvent.press(getByLabelText('Open settings'));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens about on press', async () => {
+    const onOpenAbout = jest.fn();
+    const { getByLabelText } = await render(<ServersDrawer {...createProps({ onOpenAbout })} />);
+    await fireEvent.press(getByLabelText('Open about'));
+    expect(onOpenAbout).toHaveBeenCalledTimes(1);
   });
 });

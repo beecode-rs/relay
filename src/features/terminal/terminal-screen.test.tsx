@@ -2,8 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { type ComponentProps } from 'react';
-import { Alert, Dimensions, Keyboard, Platform, StyleSheet } from 'react-native';
-import type { EmitterSubscription, KeyboardEvent } from 'react-native';
+import { Alert, AppState, Dimensions, Keyboard, Platform, StyleSheet } from 'react-native';
+import type { AppStateStatus, EmitterSubscription, KeyboardEvent } from 'react-native';
 
 import { constant } from '@/constants/constant';
 import { TerminalPreferenceProvider } from '@/components/terminal-preference-context';
@@ -415,6 +415,22 @@ const captureKeyboardListeners = (): Record<string, (event: KeyboardEvent) => vo
     } as unknown as EmitterSubscription;
   });
   return keyboardListeners;
+};
+
+const captureAppStateListeners = (): ((state: AppStateStatus) => void)[] => {
+  const listeners: ((state: AppStateStatus) => void)[] = [];
+  jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, handler) => {
+    listeners.push(handler);
+    return {
+      remove: () => {
+        const index = listeners.indexOf(handler);
+        if (index >= 0) {
+          listeners.splice(index, 1);
+        }
+      },
+    };
+  });
+  return listeners;
 };
 
 const PORTRAIT_DIMENSIONS = { screen: Dimensions.get('screen'), window: Dimensions.get('window') };
@@ -1227,6 +1243,19 @@ describe('TerminalScreen sessions drawer', () => {
     expect(screen.queryByText('work')).toBeNull();
   });
 
+  it('navigates to about from the drawer footer and closes the drawer', async () => {
+    const session = createFakeSession('connected', CONNECT_OPTIONS);
+    session.tmuxSessions = ['work'];
+    await renderScreen(session);
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    await waitFor(() => {
+      expect(screen.getByText('work')).toBeTruthy();
+    });
+    await fireEvent.press(screen.getByLabelText('Open about'));
+    expect(router.navigate).toHaveBeenCalledWith('/about');
+    expect(screen.queryByText('work')).toBeNull();
+  });
+
   it('shows an empty hint when no tmux sessions exist', async () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     await renderScreen(session);
@@ -1830,6 +1859,29 @@ describe('TerminalScreen last tmux session memory', () => {
     session.tmuxCurrentSessionName = 'play';
     const { sessionNamesById } = await renderScreen(session);
     await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+
+    await waitFor(() => {
+      expect(sessionNamesById.get(PROFILE_ID)).toBe('play');
+    });
+  });
+
+  it('refreshes the remembered session when the app moves to the background', async () => {
+    const appStateListeners = captureAppStateListeners();
+    const session = createFakeSession('connected', CONNECT_OPTIONS);
+    session.tmuxSessions = ['work', 'play'];
+    session.tmuxCurrentSessionName = 'work';
+    const { sessionNamesById } = await renderScreen(session);
+    await waitFor(() => {
+      expect(sessionNamesById.get(PROFILE_ID)).toBe('work');
+    });
+
+    // The user switched sessions inside tmux after the app last listed them.
+    session.tmuxCurrentSessionName = 'play';
+    await act(async () => {
+      appStateListeners.forEach((listener) => {
+        listener('background');
+      });
+    });
 
     await waitFor(() => {
       expect(sessionNamesById.get(PROFILE_ID)).toBe('play');

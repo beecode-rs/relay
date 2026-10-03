@@ -24,6 +24,9 @@ const STATUS_CONNECTED = '#4caf50';
 const STATUS_CONNECTING = '#ffc107';
 const STATUS_DISCONNECTED = '#9e9e9e';
 const STATUS_FAILED = '#f44336';
+const MENU_ICON_BLUE = '#81d4fa';
+const MENU_ICON_PURPLE = '#ce93d8';
+const MENU_ICON_GREEN = '#66bb6a';
 
 const INVALID_SESSION_NAME_CHARS_PATTERN = /[.:]/;
 
@@ -54,6 +57,7 @@ export type ServersDrawerProps = {
   onClose(): void;
   onAddServer(): void;
   onOpenSettings(): void;
+  onOpenAbout(): void;
   onSelectServer(profileId: string): void;
   onSelectSession(profileId: string, sessionName: string): void;
   onCreateSession(profileId: string, sessionName: string, remotePath: string): void;
@@ -124,6 +128,7 @@ export function ServersDrawer({
   onClose,
   onAddServer,
   onOpenSettings,
+  onOpenAbout,
   onSelectServer,
   onSelectSession,
   onCreateSession,
@@ -379,6 +384,7 @@ export function ServersDrawer({
           {isConnected
             ? renderMenuItem({
                 accessibilityLabel: `New session on ${server.displayName}`,
+                color: MENU_ICON_GREEN,
                 iconName: 'plus',
                 onPress: () => {
                   handleOpenNamePrompt(server.profileId);
@@ -390,6 +396,7 @@ export function ServersDrawer({
           {isConnected
             ? renderMenuItem({
                 accessibilityLabel: `Refresh sessions on ${server.displayName}`,
+                color: MENU_ICON_PURPLE,
                 iconName: 'refresh',
                 onPress: () => {
                   handleRefreshServer(server.profileId);
@@ -398,6 +405,16 @@ export function ServersDrawer({
                 title: 'Refresh sessions',
               })
             : null}
+          {renderMenuItem({
+            accessibilityLabel: `Edit instance ${server.displayName}`,
+            color: MENU_ICON_BLUE,
+            iconName: 'pencil-outline',
+            onPress: () => {
+              handleEditServer(server.profileId);
+            },
+            testID: `servers-drawer-edit-${server.profileId}`,
+            title: 'Edit instance',
+          })}
           {isDisconnectable
             ? renderMenuItem({
                 accessibilityLabel: `Disconnect from ${server.displayName}`,
@@ -411,15 +428,6 @@ export function ServersDrawer({
                 title: 'Disconnect',
               })
             : null}
-          {renderMenuItem({
-            accessibilityLabel: `Edit instance ${server.displayName}`,
-            iconName: 'pencil-outline',
-            onPress: () => {
-              handleEditServer(server.profileId);
-            },
-            testID: `servers-drawer-edit-${server.profileId}`,
-            title: 'Edit instance',
-          })}
           {renderMenuItem({
             accessibilityLabel: `Remove instance ${server.displayName}`,
             color: ERROR_COLOR,
@@ -449,6 +457,7 @@ export function ServersDrawer({
         <View style={styles.menuCard}>
           {renderMenuItem({
             accessibilityLabel: `Rename session ${sessionName}`,
+            color: MENU_ICON_BLUE,
             iconName: 'pencil-outline',
             onPress: () => {
               handleOpenRenamePrompt(profileId, sessionName);
@@ -458,6 +467,7 @@ export function ServersDrawer({
           })}
           {renderMenuItem({
             accessibilityLabel: `Clone session ${sessionName}`,
+            color: MENU_ICON_PURPLE,
             iconName: 'content-copy',
             onPress: () => {
               handleCloneSession(profileId, sessionName);
@@ -664,7 +674,7 @@ export function ServersDrawer({
                 <MaterialCommunityIcons color={constant.terminal.fg} name="plus" size={22} />
               </Pressable>
               <Pressable accessibilityLabel="Close instances drawer" accessibilityRole="button" onPress={handleClose}>
-                <MaterialCommunityIcons color={constant.terminal.fg} name="close" size={22} />
+                <MaterialCommunityIcons color={constant.terminal.fg} name="chevron-left" size={22} />
               </Pressable>
             </View>
           </View>
@@ -680,13 +690,27 @@ export function ServersDrawer({
               accessibilityRole="button"
               onPress={onOpenSettings}
               style={({ pressed }) => {
-                return [styles.footerRow, pressed ? styles.sessionRowPressed : null];
+                return [styles.footerButton, pressed ? styles.sessionRowPressed : null];
               }}
               testID="tmux-settings-row"
             >
               <MaterialCommunityIcons color={MUTED_COLOR} name="cog-outline" size={18} />
-              <Text numberOfLines={1} style={styles.footerRowText}>
+              <Text numberOfLines={1} style={styles.footerButtonText}>
                 Settings
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Open about"
+              accessibilityRole="button"
+              onPress={onOpenAbout}
+              style={({ pressed }) => {
+                return [styles.footerButton, pressed ? styles.sessionRowPressed : null];
+              }}
+              testID="tmux-about-row"
+            >
+              <MaterialCommunityIcons color={MUTED_COLOR} name="information-outline" size={18} />
+              <Text numberOfLines={1} style={styles.footerButtonText}>
+                About
               </Text>
             </Pressable>
           </View>
@@ -824,6 +848,7 @@ const styles = StyleSheet.create({
   drawerFooter: {
     borderTopColor: '#222222',
     borderTopWidth: 1,
+    flexDirection: 'row',
   },
   drawerHeader: {
     alignItems: 'center',
@@ -859,15 +884,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
-  footerRow: {
+  footerButton: {
     alignItems: 'center',
+    flex: 1,
     flexDirection: 'row',
-    paddingHorizontal: 14,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
     paddingVertical: 8,
   },
-  footerRowText: {
+  footerButtonText: {
     color: constant.terminal.fg,
-    flex: 1,
     fontFamily: 'monospace',
     fontSize: 13,
     marginLeft: 8,
