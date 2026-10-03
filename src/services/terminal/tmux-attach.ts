@@ -124,6 +124,34 @@ export const tmuxAttachUtil = {
     return `s${String(maxNumber + 1).padStart(2, '0')}`;
   },
 
+  // tmux has no native clone; a clone is a new session started in the source
+  // session's working directory, which this script reads from its active pane.
+  toSessionPathScript(params: { sessionName: string }): string {
+    const target = tmuxAttachUtil._toShellWord(params.sessionName);
+
+    return `${constant.tmux.pathPrelude} tmux display-message -p -t ${target} '#{pane_current_path}'`;
+  },
+
+  toSessionPathOf(params: { stdout: string }): string | null {
+    const firstLine = tmuxAttachUtil._toStdoutLines(params.stdout).find((line) => {
+      return line !== '';
+    });
+
+    return firstLine ?? null;
+  },
+
+  toCloneSessionName(params: { sessionName: string; sessionNames: string[] }): string {
+    const baseName = `${params.sessionName}-copy`;
+    let candidateName = baseName;
+    let copyIndex = 2;
+    while (params.sessionNames.includes(candidateName)) {
+      candidateName = `${baseName}-${String(copyIndex)}`;
+      copyIndex += 1;
+    }
+
+    return candidateName;
+  },
+
   // Dropped mobile connections leave zombie tmux clients behind (sshd holds the
   // PTY while the dead socket lingers), and list-clients returns them in
   // creation order - oldest first. The live client is always the newest one,

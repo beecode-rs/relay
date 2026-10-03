@@ -300,3 +300,55 @@ describe('tmuxAttachUtil.toScrollOutcome', () => {
     expect(tmuxAttachUtil.toScrollOutcome({ stdout: '' })).toEqual({ kind: 'none' });
   });
 });
+
+describe('tmuxAttachUtil.toSessionPathScript', () => {
+  it('reads the working directory of the target session pane', () => {
+    const script = tmuxAttachUtil.toSessionPathScript({ sessionName: 'work' });
+
+    expect(script).toBe(
+      `${constant.tmux.pathPrelude} tmux display-message -p -t work '#{pane_current_path}'`
+    );
+  });
+
+  it('quotes session names that are not shell-safe', () => {
+    const script = tmuxAttachUtil.toSessionPathScript({ sessionName: 'my session' });
+
+    expect(script).toContain(`-t 'my session' '#{pane_current_path}'`);
+  });
+});
+
+describe('tmuxAttachUtil.toSessionPathOf', () => {
+  it('trims the first stdout line', () => {
+    expect(tmuxAttachUtil.toSessionPathOf({ stdout: '/srv/app\r\n' })).toBe('/srv/app');
+  });
+
+  it('skips leading empty lines', () => {
+    expect(tmuxAttachUtil.toSessionPathOf({ stdout: '\n/srv/app\n' })).toBe('/srv/app');
+  });
+
+  it('returns null without any output', () => {
+    expect(tmuxAttachUtil.toSessionPathOf({ stdout: '' })).toBeNull();
+    expect(tmuxAttachUtil.toSessionPathOf({ stdout: '\n \n' })).toBeNull();
+  });
+});
+
+describe('tmuxAttachUtil.toCloneSessionName', () => {
+  it('appends -copy to the source name', () => {
+    expect(tmuxAttachUtil.toCloneSessionName({ sessionName: 'work', sessionNames: [] })).toBe('work-copy');
+  });
+
+  it('numbers further duplicates', () => {
+    expect(
+      tmuxAttachUtil.toCloneSessionName({ sessionName: 'work', sessionNames: ['work-copy'] })
+    ).toBe('work-copy-2');
+    expect(
+      tmuxAttachUtil.toCloneSessionName({ sessionName: 'work', sessionNames: ['work-copy', 'work-copy-2'] })
+    ).toBe('work-copy-3');
+  });
+
+  it('ignores unrelated session names', () => {
+    expect(tmuxAttachUtil.toCloneSessionName({ sessionName: 'work', sessionNames: ['other-copy'] })).toBe(
+      'work-copy'
+    );
+  });
+});

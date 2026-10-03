@@ -49,7 +49,7 @@ export const SshKeySettingsTab = (): JSX.Element => {
   const confirmGenerateKey = () => {
     Alert.alert(
       'Generate new key',
-      'The current device key will be replaced. Servers that trust it will stop accepting this device until the new key is installed.',
+      'The current device key will be replaced. Instances that trust it will stop accepting this device until the new key is installed.',
       [
         { style: 'cancel', text: 'Cancel' },
         {
@@ -117,7 +117,7 @@ export const SshKeySettingsTab = (): JSX.Element => {
   const handleRemovePress = () => {
     Alert.alert(
       'Remove device key',
-      'The device key will be deleted from this device. Servers that trust it will stop accepting this device.',
+      'The device key will be deleted from this device. Instances that trust it will stop accepting this device.',
       [
         { style: 'cancel', text: 'Cancel' },
         {

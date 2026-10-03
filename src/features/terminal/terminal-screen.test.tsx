@@ -1,17 +1,19 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
+import { type ComponentProps } from 'react';
 import { Alert, Dimensions, Keyboard, Platform, StyleSheet } from 'react-native';
 import type { EmitterSubscription, KeyboardEvent } from 'react-native';
 
 import { constant } from '@/constants/constant';
 import { TerminalPreferenceProvider } from '@/components/terminal-preference-context';
 import { TerminalScreen, screenBottomInsetOf } from '@/features/terminal/terminal-screen';
-import type { TerminalScreenSession } from '@/features/terminal/terminal-screen';
+import type { TerminalScreenRegistry, TerminalScreenRegistryEntry, TerminalScreenSession } from '@/features/terminal/terminal-screen';
 
 import type { TerminalPreferenceStorage } from '@/services/terminal/terminal-preference';
 import { serverConnectOptions } from '@/services/connection/connect-options';
 import type { ServerLastSessionStore } from '@/services/connection/server-last-session-store';
+import type { ActiveServerStore } from '@/services/connection/active-server-store';
 import type { TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 import type { TerminalSessionState } from '@/services/terminal/terminal-session';
 import type { SshConnectOptions } from '@/services/terminal/ssh-terminal-types';
@@ -21,7 +23,19 @@ jest.mock('expo-clipboard', () => {
 });
 
 jest.mock('expo-router', () => {
-  return { router: { dismissTo: jest.fn(), navigate: jest.fn(), replace: jest.fn() } };
+  // Faithful enough for tests: fire the focus callback once per callback
+  // identity (the real hook fires on focus and on callback change, not per
+  // render).
+  let lastFocusCallback: (() => void) | null = null;
+  return {
+    router: { back: jest.fn(), dismissTo: jest.fn(), navigate: jest.fn(), push: jest.fn(), replace: jest.fn() },
+    useFocusEffect: (callback: () => void) => {
+      if (callback !== lastFocusCallback) {
+        lastFocusCallback = callback;
+        callback();
+      }
+    },
+  };
 });
 
 jest.mock('@/services/connection/connect-options', () => {
@@ -65,6 +79,12 @@ const SNAPSHOT: TerminalSnapshot = {
 
 const PROFILE_ID = 'profile-1';
 
+const toProfileOf = (options: SshConnectOptions | null): { host: string; id: string; label: string; remotePath?: string } => {
+  const host = options?.host ?? 'example.com';
+
+  return { host, id: PROFILE_ID, label: options?.label ?? host, remotePath: options?.remotePath };
+};
+
 const CONNECT_OPTIONS: SshConnectOptions = {
   acceptedHostKeys: ['example.com ssh-ed25519 KEY'],
   auth: { kind: 'password', password: 'secret' },
@@ -77,6 +97,7 @@ const CONNECT_OPTIONS: SshConnectOptions = {
 
 type FakeSession = TerminalScreenSession & {
   acceptedHostKeyCount: number;
+  clonedTmuxSessions: { nextSessionName: string; sessionName: string }[];
   createdTmuxSessions: { sessionName: string; startPath?: string }[];
   detachedTmuxCount: number;
   dismissedTmuxPromptCount: number;
@@ -130,6 +151,8 @@ const createFakeSession = (
     endedCount: 0,
     end() {
       this.endedCount += 1;
+      // The real TerminalSession.end() reports 'closed' to its listeners.
+      this.emitState({ status: 'closed' });
     },
     get currentState() {
       return tracked.state;
@@ -152,6 +175,13 @@ const createFakeSession = (
     createdTmuxSessions: [],
     async createTmuxSession(params: { sessionName: string; startPath?: string }) {
       this.createdTmuxSessions.push(params);
+
+      return true;
+    },
+    clonedTmuxSessions: [],
+    async cloneTmuxSession(params: { nextSessionName: string; sessionName: string }) {
+      this.clonedTmuxSessions.push(params);
+      this.tmuxSessions = [...this.tmuxSessions, params.nextSessionName];
 
       return true;
     },
@@ -225,6 +255,10 @@ const createFakeSession = (
     async start(options: SshConnectOptions) {
       this.started.push(options);
       tracked.live = options;
+      // The real TerminalSession moves to 'connecting' synchronously on start.
+      if (tracked.state.status === 'idle') {
+        tracked.state = { status: 'connecting' };
+      }
     },
     get status() {
       return tracked.state.status;
@@ -246,6 +280,76 @@ const createLoaderWith = (options: SshConnectOptions | null) => {
   return jest.fn().mockResolvedValue(options);
 };
 
+const createFakeRegistry = (session: FakeSession): TerminalScreenRegistry => {
+  const listeners = new Set<() => void>();
+  const entries = new Map<string, TerminalScreenRegistryEntry>();
+  const notify = () => {
+    listeners.forEach((listener) => {
+      listener();
+    });
+  };
+  return {
+    list: () => {
+      return [...entries.values()];
+    },
+    find: (profileId) => {
+      return entries.get(profileId) ?? null;
+    },
+    async ensureStarted({ profileId, connectOptions }) {
+      let entry = entries.get(profileId);
+      if (entry === undefined) {
+        entry = { profileId, connectOptions, session };
+        entries.set(profileId, entry);
+        // Mirrors the real registry: a closed session drops out of the list.
+        session.subscribe((state) => {
+          if (state.status === 'closed') {
+            entries.delete(profileId);
+            notify();
+          }
+        });
+        notify();
+      }
+      if (!session.isActiveFor(connectOptions)) {
+        await session.start(connectOptions);
+      }
+
+      return entry;
+    },
+    disconnect(profileId) {
+      if (!entries.has(profileId)) {
+        return;
+      }
+      entries.delete(profileId);
+      session.end();
+      notify();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+};
+
+const createActiveServerStore = (initialId: string | null = PROFILE_ID) => {
+  const state = { id: initialId };
+  const store: ActiveServerStore = {
+    async clear() {
+      state.id = null;
+    },
+    async find() {
+      return state.id;
+    },
+    async save({ id }) {
+      state.id = id;
+    },
+  };
+
+  return { state, store };
+};
+
 const createLastSessionStore = () => {
   const sessionNamesById = new Map<string, string>();
   const store: ServerLastSessionStore = {
@@ -265,17 +369,24 @@ const createLastSessionStore = () => {
 
 type RenderedScreen = Awaited<ReturnType<typeof render>> & { sessionNamesById: Map<string, string> };
 
+type ScreenProps = ComponentProps<typeof TerminalScreen>;
+
 const renderScreen = async (
   session: FakeSession,
-  options: SshConnectOptions | null = CONNECT_OPTIONS
+  options: SshConnectOptions | null = CONNECT_OPTIONS,
+  extraProps: Partial<ScreenProps> = {}
 ): Promise<RenderedScreen> => {
   const { sessionNamesById, store } = createLastSessionStore();
   const renderResult = await render(
     <TerminalScreen
+      activeServerStore={createActiveServerStore().store}
       lastSessionStore={store}
+      listProfiles={async () => {
+        return options === null ? [] : [toProfileOf(options)];
+      }}
       loadConnectOptions={createLoaderWith(options)}
-      profileId={PROFILE_ID}
-      session={session}
+      registry={createFakeRegistry(session)}
+      {...extraProps}
     />
   );
 
@@ -286,6 +397,11 @@ const keyboardShowEvent = (height: number): KeyboardEvent => {
   return {
     endCoordinates: { height, screenX: 0, screenY: 0, width: 359 },
   } as unknown as KeyboardEvent;
+};
+
+const openNewSessionPrompt = async (): Promise<void> => {
+  await fireEvent.press(screen.getByLabelText('Instance actions for example.com'));
+  await fireEvent.press(screen.getByLabelText('New session on example.com'));
 };
 
 const captureKeyboardListeners = (): Record<string, (event: KeyboardEvent) => void> => {
@@ -346,13 +462,84 @@ describe('TerminalScreen mount', () => {
     expect(session.started[0]).toEqual(CONNECT_OPTIONS);
   });
 
-  it('redirects to servers when the profile cannot be resolved', async () => {
+  it('shows the add-instance empty state when no instance can be resolved', async () => {
     const session = createFakeSession();
     await renderScreen(session, null);
     await waitFor(() => {
-      expect(router.dismissTo).toHaveBeenCalledWith('/');
+      expect(screen.getByTestId('terminal-setup')).toBeTruthy();
     });
+    expect(screen.queryByTestId('terminal-screen')).toBeNull();
     expect(session.started).toHaveLength(0);
+    await fireEvent.press(screen.getByLabelText('Add instance'));
+    expect(router.push).toHaveBeenCalledWith('/connect');
+  });
+
+  it('starts the profile remembered as the active server on launch', async () => {
+    const session = createFakeSession();
+    await renderScreen(session);
+    await waitFor(() => {
+      expect(session.started).toHaveLength(1);
+    });
+    expect(session.started[0]).toEqual(CONNECT_OPTIONS);
+  });
+
+  it('falls back to the first loadable server when none is remembered', async () => {
+    const session = createFakeSession();
+    await renderScreen(session, CONNECT_OPTIONS, {
+      activeServerStore: createActiveServerStore(null).store,
+    });
+    await waitFor(() => {
+      expect(session.started).toHaveLength(1);
+    });
+    expect(session.started[0]).toEqual(CONNECT_OPTIONS);
+  });
+
+  it('resumes the remembered server on relaunch without reconnecting', async () => {
+    const session = createFakeSession();
+    const registry = createFakeRegistry(session);
+    const activeStore = createActiveServerStore(null);
+    const first = await renderScreen(session, CONNECT_OPTIONS, {
+      activeServerStore: activeStore.store,
+      registry,
+    });
+    await waitFor(() => {
+      expect(session.started).toHaveLength(1);
+    });
+    await act(async () => {
+      session.emitState({ status: 'connected' });
+    });
+    await act(async () => {
+      first.unmount();
+    });
+    expect(activeStore.state.id).toBe(PROFILE_ID);
+
+    // App relaunch: a fresh screen resolves the remembered active server.
+    await renderScreen(session, CONNECT_OPTIONS, {
+      activeServerStore: activeStore.store,
+      registry,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('example.com')).toBeTruthy();
+    });
+    expect(session.started).toHaveLength(1);
+  });
+
+  it('saves the active server to the store once resolved', async () => {
+    const session = createFakeSession();
+    const savedIds: string[] = [];
+    const backingStore = createActiveServerStore(null);
+    const trackingStore: ActiveServerStore = {
+      clear: backingStore.store.clear,
+      find: backingStore.store.find,
+      async save({ id }) {
+        savedIds.push(id);
+        await backingStore.store.save({ id });
+      },
+    };
+    await renderScreen(session, CONNECT_OPTIONS, { activeServerStore: trackingStore });
+    await waitFor(() => {
+      expect(savedIds).toContain(PROFILE_ID);
+    });
   });
 
   it('does not auto-start when the session is already active', async () => {
@@ -390,8 +577,8 @@ describe('TerminalScreen mount', () => {
     await waitFor(() => {
       expect(screen.getByText('work - My build box')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
-    await fireEvent.press(screen.getByLabelText('Detach from session'));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    await fireEvent.press(screen.getByLabelText('Select instance My build box'));
     await waitFor(() => {
       expect(screen.getByText('My build box')).toBeTruthy();
     });
@@ -408,7 +595,8 @@ describe('TerminalScreen mount', () => {
 
   it('resumes the live session content when remounted after navigating away', async () => {
     const session = createFakeSession();
-    const first = await renderScreen(session);
+    const registry = createFakeRegistry(session);
+    const first = await renderScreen(session, CONNECT_OPTIONS, { registry });
     await waitFor(() => {
       expect(first.getByText('example.com')).toBeTruthy();
     });
@@ -418,7 +606,7 @@ describe('TerminalScreen mount', () => {
     await act(async () => {
       first.unmount();
     });
-    const second = await renderScreen(session);
+    const second = await renderScreen(session, CONNECT_OPTIONS, { registry });
     await waitFor(() => {
       expect(second.getByText('red')).toBeTruthy();
     });
@@ -469,7 +657,7 @@ describe('TerminalScreen session states', () => {
       expect(session.started).toHaveLength(2);
     });
     await fireEvent.press(screen.getByRole('button', { name: 'Edit' }));
-    expect(router.replace).toHaveBeenCalledWith({ params: { id: PROFILE_ID }, pathname: '/connect' });
+    expect(router.push).toHaveBeenCalledWith({ params: { id: PROFILE_ID }, pathname: '/connect' });
   });
 
   it('shows the fingerprint on a pending host key without Reconnect', async () => {
@@ -491,10 +679,13 @@ describe('TerminalScreen session states', () => {
     const persistAcceptedHostKey = jest.fn().mockResolvedValue(undefined);
     await render(
       <TerminalScreen
-        session={session}
-        profileId={PROFILE_ID}
+        activeServerStore={createActiveServerStore().store}
+        listProfiles={async () => {
+          return [toProfileOf(CONNECT_OPTIONS)];
+        }}
         loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)}
         persistAcceptedHostKey={persistAcceptedHostKey}
+        registry={createFakeRegistry(session)}
       />
     );
     await act(async () => {
@@ -539,10 +730,8 @@ describe('TerminalScreen session states', () => {
       disconnectButton?.onPress?.();
     });
     expect(session.endedCount).toBe(1);
-    await act(async () => {
-      session.emitState({ status: 'closed' });
-    });
     expect(screen.getByText('Disconnected')).toBeTruthy();
+    expect(router.dismissTo).not.toHaveBeenCalled();
     alertSpy.mockRestore();
   });
 });
@@ -882,7 +1071,7 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work', 'play'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
       expect(screen.getByText('play')).toBeTruthy();
@@ -895,18 +1084,18 @@ describe('TerminalScreen sessions drawer', () => {
     session.tmuxSessions = ['work', 'play'];
     session.tmuxCurrentSessionName = 'play';
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
-      expect(screen.getByTestId('tmux-session-row-play').props.accessibilityState).toEqual({ selected: true });
+      expect(screen.getByTestId(`tmux-session-row-${PROFILE_ID}-play`).props.accessibilityState).toEqual({ selected: true });
     });
-    expect(screen.getByTestId('tmux-session-row-work').props.accessibilityState).toEqual({ selected: false });
+    expect(screen.getByTestId(`tmux-session-row-${PROFILE_ID}-work`).props.accessibilityState).toEqual({ selected: false });
   });
 
   it('shows the listing error in the drawer when listing fails', async () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxListError = 'Could not list tmux sessions: tmux in a fresh login shell sees no server';
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText(/sees no server/)).toBeTruthy();
     });
@@ -917,7 +1106,7 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
@@ -931,11 +1120,11 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('Detach from session'));
+    await fireEvent.press(screen.getByLabelText('Select instance example.com'));
     expect(session.detachedTmuxCount).toBe(1);
     expect(session.writes).toEqual([]);
     expect(screen.queryByText('work')).toBeNull();
@@ -945,17 +1134,18 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work', 'play'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
     const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
       return;
     });
-    await fireEvent.press(screen.getByLabelText('Close session work'));
+    await fireEvent.press(screen.getByTestId('servers-drawer-session-menu-profile-1-work'));
+    await fireEvent.press(screen.getByTestId('servers-drawer-kill-profile-1-work'));
     const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
     const confirmButton = buttons.find((button) => {
-      return button.text === 'Close';
+      return button.text === 'Kill';
     });
     await act(async () => {
       confirmButton?.onPress?.();
@@ -972,11 +1162,12 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work', 'play'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('Rename session work'));
+    await fireEvent.press(screen.getByTestId('servers-drawer-session-menu-profile-1-work'));
+    await fireEvent.press(screen.getByTestId('servers-drawer-rename-profile-1-work'));
     await fireEvent.changeText(screen.getByTestId('tmux-rename-session-input'), 'renamed');
     await fireEvent.press(screen.getByText('Rename'));
     expect(session.renamedTmuxSessions).toEqual([{ nextSessionName: 'renamed', sessionName: 'work' }]);
@@ -988,18 +1179,19 @@ describe('TerminalScreen sessions drawer', () => {
     expect(session.listTmuxSessionsCalls).toBe(3);
   });
 
-  it('keeps the session when closing is cancelled', async () => {
+  it('keeps the session when killing is cancelled', async () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
     const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
       return;
     });
-    await fireEvent.press(screen.getByLabelText('Close session work'));
+    await fireEvent.press(screen.getByTestId('servers-drawer-session-menu-profile-1-work'));
+    await fireEvent.press(screen.getByTestId('servers-drawer-kill-profile-1-work'));
     const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
     buttons[0]?.onPress?.();
     expect(session.killedTmuxSessions).toEqual([]);
@@ -1013,11 +1205,11 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
-    await fireEvent.press(screen.getAllByLabelText('Close sessions drawer')[0]);
+    await fireEvent.press(screen.getAllByLabelText('Close instances drawer')[0]);
     expect(screen.queryByText('work')).toBeNull();
     expect(session.writes).toEqual([]);
   });
@@ -1026,7 +1218,7 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
@@ -1038,7 +1230,7 @@ describe('TerminalScreen sessions drawer', () => {
   it('shows an empty hint when no tmux sessions exist', async () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('No tmux sessions')).toBeTruthy();
     });
@@ -1048,11 +1240,11 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['s01'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('s01')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('New session'));
+    await openNewSessionPrompt();
     await fireEvent.press(screen.getByText('Create'));
     expect(session.createdTmuxSessions).toEqual([{ sessionName: 's02', startPath: '' }]);
     await waitFor(() => {
@@ -1066,11 +1258,11 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['s01'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('s01')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('New session'));
+    await openNewSessionPrompt();
     await fireEvent.changeText(screen.getByTestId('tmux-new-session-name-input'), 'work');
     await fireEvent.press(screen.getByText('Create'));
     expect(session.createdTmuxSessions).toEqual([{ sessionName: 'work', startPath: '' }]);
@@ -1083,11 +1275,11 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['s01'];
     await renderScreen(session, { ...CONNECT_OPTIONS, remotePath: '/srv/app' });
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('s01')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('New session'));
+    await openNewSessionPrompt();
     expect(screen.getByTestId('tmux-new-session-path-input').props.placeholder).toBe('/srv/app');
     await fireEvent.press(screen.getByText('Create'));
     expect(session.createdTmuxSessions).toEqual([{ sessionName: 's02', startPath: '/srv/app' }]);
@@ -1097,11 +1289,11 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['s01'];
     await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('s01')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('New session'));
+    await openNewSessionPrompt();
     await fireEvent.changeText(screen.getByTestId('tmux-new-session-path-input'), '/opt/data');
     await fireEvent.press(screen.getByText('Create'));
     expect(session.createdTmuxSessions).toEqual([{ sessionName: 's02', startPath: '/opt/data' }]);
@@ -1111,8 +1303,8 @@ describe('TerminalScreen sessions drawer', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.remoteDirectories = ['app'];
     await renderScreen(session, { ...CONNECT_OPTIONS, remotePath: '/srv' });
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
-    await fireEvent.press(screen.getByLabelText('New session'));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    await openNewSessionPrompt();
     await fireEvent.press(screen.getByLabelText('Browse remote folders'));
     await fireEvent.press(await screen.findByText('app'));
     await fireEvent.press(screen.getByText('Use this folder'));
@@ -1122,12 +1314,505 @@ describe('TerminalScreen sessions drawer', () => {
   });
 });
 
+describe('TerminalScreen multiple servers', () => {
+  const PROFILE_B = 'profile-2';
+  const CONNECT_OPTIONS_B: SshConnectOptions = { ...CONNECT_OPTIONS, host: 'beta.example.com', label: 'beta' };
+
+  const createMultiFakeRegistry = (
+    entriesById: Record<string, { session: FakeSession; connectOptions: SshConnectOptions }>
+  ): TerminalScreenRegistry => {
+    const listeners = new Set<() => void>();
+    const entries = new Map<string, TerminalScreenRegistryEntry>();
+    const notify = () => {
+      listeners.forEach((listener) => {
+        listener();
+      });
+    };
+    Object.entries(entriesById).forEach(([profileId, init]) => {
+      entries.set(profileId, { profileId, connectOptions: init.connectOptions, session: init.session });
+      init.session.subscribe((state) => {
+        if (state.status === 'closed' && entries.get(profileId)?.session === init.session) {
+          entries.delete(profileId);
+          notify();
+        }
+      });
+    });
+    return {
+      list: () => {
+        return [...entries.values()];
+      },
+      find: (profileId) => {
+        return entries.get(profileId) ?? null;
+      },
+      async ensureStarted({ profileId, connectOptions }) {
+        const init = entriesById[profileId];
+        if (init === undefined) {
+          throw new Error(`unknown profile ${profileId}`);
+        }
+        let entry = entries.get(profileId);
+        if (entry === undefined) {
+          entry = { profileId, connectOptions, session: init.session };
+          entries.set(profileId, entry);
+          notify();
+        }
+        if (!init.session.isActiveFor(connectOptions)) {
+          await init.session.start(connectOptions);
+        }
+
+        return entry;
+      },
+      disconnect(profileId) {
+        const entry = entries.get(profileId);
+        if (entry === undefined) {
+          return;
+        }
+        entries.delete(profileId);
+        entry.session.end();
+        notify();
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+  };
+
+  const renderTwoServers = async (sessionA: FakeSession, sessionB: FakeSession) => {
+    const { sessionNamesById, store } = createLastSessionStore();
+    const renderResult = await render(
+      <TerminalScreen
+        activeServerStore={createActiveServerStore().store}
+        lastSessionStore={store}
+        listProfiles={async () => {
+          return [
+            { host: 'example.com', id: PROFILE_ID, label: 'example.com', remotePath: undefined },
+            { host: 'beta.example.com', id: PROFILE_B, label: 'beta', remotePath: undefined },
+          ];
+        }}
+        loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)}
+        registry={createMultiFakeRegistry({
+          [PROFILE_B]: { connectOptions: CONNECT_OPTIONS_B, session: sessionB },
+          [PROFILE_ID]: { connectOptions: CONNECT_OPTIONS, session: sessionA },
+        })}
+      />
+    );
+
+    return { ...renderResult, sessionNamesById };
+  };
+
+  it('shows every connected server group with its sessions in the drawer', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    sessionA.tmuxSessions = ['work'];
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    sessionB.tmuxSessions = ['solo'];
+    await renderTwoServers(sessionA, sessionB);
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    expect(screen.getByTestId(`servers-drawer-server-${PROFILE_ID}`)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId(`servers-drawer-server-${PROFILE_B}`)).toBeTruthy();
+    });
+    expect(screen.getByText('work')).toBeTruthy();
+    expect(screen.getByText('solo')).toBeTruthy();
+    expect(sessionA.listTmuxSessionsCalls).toBeGreaterThanOrEqual(1);
+    expect(sessionB.listTmuxSessionsCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('switches the active terminal when selecting the other server session', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    sessionA.tmuxSessions = ['work'];
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    sessionB.tmuxSessions = ['solo'];
+    sessionB.tmuxCurrentSessionName = 'solo';
+    const { sessionNamesById } = await renderTwoServers(sessionA, sessionB);
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    await waitFor(() => {
+      expect(screen.getByTestId(`tmux-session-row-${PROFILE_B}-solo`)).toBeTruthy();
+    });
+    await fireEvent.press(screen.getByTestId(`tmux-session-row-${PROFILE_B}-solo`));
+
+    expect(sessionB.focusedTmuxSessions).toEqual(['solo']);
+    expect(sessionA.focusedTmuxSessions).toEqual([]);
+    await waitFor(() => {
+      expect(screen.getByText('solo - beta')).toBeTruthy();
+    });
+    await waitFor(() => {
+      expect(sessionNamesById.get(PROFILE_B)).toBe('solo');
+    });
+  });
+
+  it('detaches on the selected server when tapping its name', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    sessionB.tmuxSessions = ['solo'];
+    sessionB.tmuxCurrentSessionName = 'solo';
+    await renderTwoServers(sessionA, sessionB);
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    await waitFor(() => {
+      expect(screen.getByTestId(`servers-drawer-server-${PROFILE_B}`)).toBeTruthy();
+    });
+    await fireEvent.press(screen.getByLabelText('Select instance beta'));
+
+    expect(sessionB.detachedTmuxCount).toBe(1);
+    expect(sessionA.detachedTmuxCount).toBe(0);
+    await waitFor(() => {
+      expect(screen.queryByTestId('servers-drawer')).toBeNull();
+    });
+  });
+
+  it('disconnecting a background server from the drawer keeps the active terminal', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
+      return;
+    });
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    await renderTwoServers(sessionA, sessionB);
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+    await waitFor(() => {
+      expect(screen.getByTestId(`servers-drawer-menu-${PROFILE_B}`)).toBeTruthy();
+    });
+    await fireEvent.press(screen.getByTestId(`servers-drawer-menu-${PROFILE_B}`));
+    await fireEvent.press(screen.getByTestId(`servers-drawer-disconnect-${PROFILE_B}`));
+    const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
+    await act(async () => {
+      buttons[1]?.onPress?.();
+    });
+
+    expect(sessionB.endedCount).toBe(1);
+    expect(sessionA.endedCount).toBe(0);
+    // The saved instance stays in the drawer, now marked as not connected.
+    await waitFor(() => {
+      expect(screen.getByText('Not connected')).toBeTruthy();
+    });
+    expect(screen.getByTestId(`servers-drawer-server-${PROFILE_ID}`)).toBeTruthy();
+    expect(router.dismissTo).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
+  it('switches to the remaining server when the active one disconnects', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
+      return undefined;
+    });
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    await renderTwoServers(sessionA, sessionB);
+    await fireEvent.press(screen.getByRole('button', { name: 'Disconnect' }));
+    const disconnectButton = alertSpy.mock.calls[0]?.[2]?.[1];
+    await act(async () => {
+      disconnectButton?.onPress?.();
+    });
+
+    expect(sessionA.endedCount).toBe(1);
+    await waitFor(() => {
+      expect(screen.getByText('beta')).toBeTruthy();
+    });
+    expect(router.dismissTo).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
+  it('keeps a remotely closed server in the drawer as disconnected', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    await renderTwoServers(sessionA, sessionB);
+    await act(async () => {
+      sessionB.emitState({ status: 'closed' });
+    });
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`servers-drawer-server-${PROFILE_ID}`)).toBeTruthy();
+    });
+    // The connection is gone but the saved instance remains listed.
+    expect(screen.getByTestId(`servers-drawer-server-${PROFILE_B}`)).toBeTruthy();
+    expect(screen.getByText('Not connected')).toBeTruthy();
+  });
+});
+
+describe('TerminalScreen instance management', () => {
+  const PROFILE_B = 'profile-2';
+  const CONNECT_OPTIONS_B: SshConnectOptions = { ...CONNECT_OPTIONS, host: 'beta.example.com', label: 'beta' };
+
+  // Registry that only seeds the given ids up front; other known profiles join
+  // lazily through ensureStarted, mirroring a saved-but-not-connected instance.
+  const createLazyRegistry = (
+    sessionsById: Record<string, { connectOptions: SshConnectOptions; session: FakeSession }>,
+    preseededIds: string[]
+  ): TerminalScreenRegistry => {
+    const listeners = new Set<() => void>();
+    const entries = new Map<string, TerminalScreenRegistryEntry>();
+    const notify = () => {
+      listeners.forEach((listener) => {
+        listener();
+      });
+    };
+    Object.entries(sessionsById).forEach(([profileId, init]) => {
+      if (preseededIds.includes(profileId)) {
+        entries.set(profileId, { profileId, connectOptions: init.connectOptions, session: init.session });
+      }
+      init.session.subscribe((state) => {
+        if (state.status === 'closed' && entries.get(profileId)?.session === init.session) {
+          entries.delete(profileId);
+          notify();
+        }
+      });
+    });
+    return {
+      list: () => {
+        return [...entries.values()];
+      },
+      find: (profileId) => {
+        return entries.get(profileId) ?? null;
+      },
+      async ensureStarted({ profileId, connectOptions }) {
+        const init = sessionsById[profileId];
+        if (init === undefined) {
+          throw new Error(`unknown profile ${profileId}`);
+        }
+        let entry = entries.get(profileId);
+        if (entry === undefined) {
+          entry = { profileId, connectOptions, session: init.session };
+          entries.set(profileId, entry);
+          notify();
+        }
+        if (!init.session.isActiveFor(connectOptions)) {
+          await init.session.start(connectOptions);
+        }
+
+        return entry;
+      },
+      disconnect(profileId) {
+        const entry = entries.get(profileId);
+        if (entry === undefined) {
+          return;
+        }
+        entries.delete(profileId);
+        entry.session.end();
+        notify();
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+  };
+
+  const loaderByProfile = (optionsById: Record<string, SshConnectOptions>) => {
+    return jest.fn(async (params: { id: string }) => {
+      return optionsById[params.id] ?? null;
+    });
+  };
+
+  type ManagementHarness = Awaited<ReturnType<typeof render>> & {
+    removeProfile: ReturnType<typeof jest.fn>;
+    savedProfiles: { host: string; id: string; label: string; remotePath?: string }[];
+  };
+
+  const renderInstanceScreen = async (params: {
+    loader: (params: { id: string }) => Promise<SshConnectOptions | null>;
+    registry: TerminalScreenRegistry;
+  }): Promise<ManagementHarness> => {
+    const savedProfiles = [
+      { host: 'example.com', id: PROFILE_ID, label: 'example.com', remotePath: undefined },
+      { host: 'beta.example.com', id: PROFILE_B, label: 'beta', remotePath: undefined },
+    ];
+    const removeProfile = jest.fn(async (profileParams: { id: string }) => {
+      const index = savedProfiles.findIndex((profile) => {
+        return profile.id === profileParams.id;
+      });
+      if (index >= 0) {
+        savedProfiles.splice(index, 1);
+      }
+    });
+    const { store } = createLastSessionStore();
+    const renderResult = await render(
+      <TerminalScreen
+        activeServerStore={createActiveServerStore().store}
+        lastSessionStore={store}
+        listProfiles={jest.fn(async () => {
+          return [...savedProfiles];
+        })}
+        loadConnectOptions={params.loader}
+        registry={params.registry}
+        removeProfile={removeProfile}
+      />
+    );
+
+    return { ...renderResult, removeProfile, savedProfiles };
+  };
+
+  const openDrawer = async () => {
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
+  };
+
+  it('lists a saved but unconnected instance and starts it on select', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('idle');
+    const registry = createLazyRegistry(
+      {
+        [PROFILE_ID]: { connectOptions: CONNECT_OPTIONS, session: sessionA },
+        [PROFILE_B]: { connectOptions: CONNECT_OPTIONS_B, session: sessionB },
+      },
+      [PROFILE_ID]
+    );
+    await renderInstanceScreen({
+      loader: loaderByProfile({ [PROFILE_B]: CONNECT_OPTIONS_B, [PROFILE_ID]: CONNECT_OPTIONS }),
+      registry,
+    });
+    await openDrawer();
+    expect(screen.getByTestId(`servers-drawer-server-${PROFILE_B}`)).toBeTruthy();
+    expect(screen.getByText('Not connected')).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId(`servers-drawer-server-${PROFILE_B}`));
+
+    await waitFor(() => {
+      expect(sessionB.started).toHaveLength(1);
+    });
+    // The instance row is the "machine" view: tmux is detached to the raw shell.
+    await waitFor(() => {
+      expect(sessionB.detachedTmuxCount).toBe(1);
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('servers-drawer')).toBeNull();
+    });
+  });
+
+  it('opens the edit form from the instance menu', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    const registry = createLazyRegistry(
+      {
+        [PROFILE_ID]: { connectOptions: CONNECT_OPTIONS, session: sessionA },
+        [PROFILE_B]: { connectOptions: CONNECT_OPTIONS_B, session: sessionB },
+      },
+      [PROFILE_ID, PROFILE_B]
+    );
+    await renderInstanceScreen({
+      loader: loaderByProfile({ [PROFILE_B]: CONNECT_OPTIONS_B, [PROFILE_ID]: CONNECT_OPTIONS }),
+      registry,
+    });
+    await openDrawer();
+    await fireEvent.press(screen.getByTestId(`servers-drawer-menu-${PROFILE_B}`));
+    await fireEvent.press(screen.getByTestId(`servers-drawer-edit-${PROFILE_B}`));
+
+    expect(router.push).toHaveBeenCalledWith({ params: { id: PROFILE_B }, pathname: '/connect' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('servers-drawer')).toBeNull();
+    });
+  });
+
+  it('removes a background instance and keeps the active terminal', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
+      return;
+    });
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    const registry = createLazyRegistry(
+      {
+        [PROFILE_ID]: { connectOptions: CONNECT_OPTIONS, session: sessionA },
+        [PROFILE_B]: { connectOptions: CONNECT_OPTIONS_B, session: sessionB },
+      },
+      [PROFILE_ID, PROFILE_B]
+    );
+    const harness = await renderInstanceScreen({
+      loader: loaderByProfile({ [PROFILE_B]: CONNECT_OPTIONS_B, [PROFILE_ID]: CONNECT_OPTIONS }),
+      registry,
+    });
+    await openDrawer();
+    await fireEvent.press(screen.getByTestId(`servers-drawer-menu-${PROFILE_B}`));
+    await fireEvent.press(screen.getByTestId(`servers-drawer-remove-${PROFILE_B}`));
+    const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
+    await act(async () => {
+      buttons[1]?.onPress?.();
+    });
+
+    await waitFor(() => {
+      expect(harness.removeProfile).toHaveBeenCalledWith({ id: PROFILE_B });
+    });
+    expect(sessionB.endedCount).toBe(1);
+    await waitFor(() => {
+      expect(screen.queryByTestId(`servers-drawer-server-${PROFILE_B}`)).toBeNull();
+    });
+    expect(screen.getByTestId(`servers-drawer-server-${PROFILE_ID}`)).toBeTruthy();
+    expect(screen.getByTestId('servers-drawer')).toBeTruthy();
+    expect(screen.getAllByText('example.com').length).toBeGreaterThan(0);
+    alertSpy.mockRestore();
+  });
+
+  it('removes the active instance and switches to the next one', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
+      return;
+    });
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    const sessionB = createFakeSession('connected', CONNECT_OPTIONS_B);
+    const registry = createLazyRegistry(
+      {
+        [PROFILE_ID]: { connectOptions: CONNECT_OPTIONS, session: sessionA },
+        [PROFILE_B]: { connectOptions: CONNECT_OPTIONS_B, session: sessionB },
+      },
+      [PROFILE_ID, PROFILE_B]
+    );
+    const harness = await renderInstanceScreen({
+      loader: loaderByProfile({ [PROFILE_B]: CONNECT_OPTIONS_B, [PROFILE_ID]: CONNECT_OPTIONS }),
+      registry,
+    });
+    await openDrawer();
+    await fireEvent.press(screen.getByTestId(`servers-drawer-menu-${PROFILE_ID}`));
+    await fireEvent.press(screen.getByTestId(`servers-drawer-remove-${PROFILE_ID}`));
+    const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
+    await act(async () => {
+      buttons[1]?.onPress?.();
+    });
+
+    await waitFor(() => {
+      expect(harness.removeProfile).toHaveBeenCalledWith({ id: PROFILE_ID });
+    });
+    expect(sessionA.endedCount).toBe(1);
+    await waitFor(() => {
+      expect(screen.getByText('beta')).toBeTruthy();
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('servers-drawer')).toBeNull();
+    });
+    alertSpy.mockRestore();
+  });
+
+  it('clones a tmux session from the session menu under a copied name', async () => {
+    const sessionA = createFakeSession('connected', CONNECT_OPTIONS);
+    sessionA.tmuxSessions = ['work'];
+    const registry = createLazyRegistry(
+      { [PROFILE_ID]: { connectOptions: CONNECT_OPTIONS, session: sessionA } },
+      [PROFILE_ID]
+    );
+    await renderInstanceScreen({
+      loader: loaderByProfile({ [PROFILE_ID]: CONNECT_OPTIONS }),
+      registry,
+    });
+    await openDrawer();
+    await waitFor(() => {
+      expect(screen.getByText('work')).toBeTruthy();
+    });
+    await fireEvent.press(screen.getByTestId(`servers-drawer-session-menu-${PROFILE_ID}-work`));
+    await fireEvent.press(screen.getByTestId(`servers-drawer-clone-${PROFILE_ID}-work`));
+
+    expect(sessionA.clonedTmuxSessions).toEqual([{ nextSessionName: 'work-copy', sessionName: 'work' }]);
+    await waitFor(() => {
+      expect(screen.getByText('work-copy')).toBeTruthy();
+    });
+    expect(screen.getByTestId('servers-drawer')).toBeTruthy();
+  });
+});
+
 describe('TerminalScreen last tmux session memory', () => {
   it('saves the selected session under its full name for the profile', async () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work', 'play'];
     const { sessionNamesById } = await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
@@ -1144,7 +1829,7 @@ describe('TerminalScreen last tmux session memory', () => {
     session.tmuxSessions = ['work', 'play'];
     session.tmuxCurrentSessionName = 'play';
     const { sessionNamesById } = await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
 
     await waitFor(() => {
       expect(sessionNamesById.get(PROFILE_ID)).toBe('play');
@@ -1155,11 +1840,11 @@ describe('TerminalScreen last tmux session memory', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     session.tmuxSessions = ['work'];
     const { sessionNamesById } = await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(screen.getByText('work')).toBeTruthy();
     });
-    await fireEvent.press(screen.getByLabelText('New session'));
+    await openNewSessionPrompt();
     await fireEvent.changeText(screen.getByTestId('tmux-new-session-name-input'), 'builds');
     await fireEvent.press(screen.getByText('Create'));
 
@@ -1174,11 +1859,11 @@ describe('TerminalScreen last tmux session memory', () => {
     session.tmuxSessions = ['work'];
     session.tmuxCurrentSessionName = 'work';
     const { sessionNamesById } = await renderScreen(session);
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(sessionNamesById.get(PROFILE_ID)).toBe('work');
     });
-    await fireEvent.press(screen.getByLabelText('Detach from session'));
+    await fireEvent.press(screen.getByLabelText('Select instance example.com'));
 
     await waitFor(() => {
       expect(sessionNamesById.has(PROFILE_ID)).toBe(false);
@@ -1190,7 +1875,7 @@ describe('TerminalScreen last tmux session memory', () => {
     session.tmuxSessions = [];
     const { sessionNamesById } = await renderScreen(session);
     sessionNamesById.set(PROFILE_ID, 'work');
-    await fireEvent.press(screen.getByRole('button', { name: 'Sessions' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Instances' }));
     await waitFor(() => {
       expect(session.listTmuxSessionsCalls).toBe(2);
     });
@@ -1216,7 +1901,7 @@ describe('TerminalScreen disconnect', () => {
     alertSpy.mockRestore();
   });
 
-  it('ends the session and returns to the server list on confirm', async () => {
+  it('keeps showing the disconnected terminal after the last server is disconnected', async () => {
     const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {
       return undefined;
     });
@@ -1228,13 +1913,14 @@ describe('TerminalScreen disconnect', () => {
       disconnectButton?.onPress?.();
     });
     expect(session.endedCount).toBe(1);
-    expect(router.dismissTo).toHaveBeenCalledWith('/');
+    expect(screen.getByText('Disconnected')).toBeTruthy();
+    expect(router.dismissTo).not.toHaveBeenCalled();
     alertSpy.mockRestore();
   });
 });
 
 describe('TerminalScreen remote close', () => {
-  it('returns to the server list when the session closes on its own', async () => {
+  it('keeps the disconnected terminal available for a manual reconnect', async () => {
     const session = createFakeSession();
     await renderScreen(session);
     await act(async () => {
@@ -1243,13 +1929,22 @@ describe('TerminalScreen remote close', () => {
     await act(async () => {
       session.emitState({ status: 'closed' });
     });
-    expect(router.dismissTo).toHaveBeenCalledWith('/');
+    expect(screen.getByText('Disconnected')).toBeTruthy();
+    expect(router.dismissTo).not.toHaveBeenCalled();
   });
 
   it('does not restart the default-loaded session after it closes', async () => {
     jest.mocked(serverConnectOptions.build).mockResolvedValue(CONNECT_OPTIONS);
     const session = createFakeSession();
-    await render(<TerminalScreen session={session} profileId={PROFILE_ID} />);
+    await render(
+      <TerminalScreen
+        activeServerStore={createActiveServerStore().store}
+        listProfiles={async () => {
+          return [toProfileOf(CONNECT_OPTIONS)];
+        }}
+        registry={createFakeRegistry(session)}
+      />
+    );
     await waitFor(() => {
       expect(session.started).toHaveLength(1);
     });
@@ -1298,7 +1993,14 @@ describe('TerminalScreen font size preference', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     await render(
       <TerminalPreferenceProvider storage={createTerminalStorage('{"fontSize":"xl"}')}>
-        <TerminalScreen session={session} profileId={PROFILE_ID} loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)} />
+        <TerminalScreen
+          activeServerStore={createActiveServerStore().store}
+          listProfiles={async () => {
+            return [toProfileOf(CONNECT_OPTIONS)];
+          }}
+          loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)}
+          registry={createFakeRegistry(session)}
+        />
       </TerminalPreferenceProvider>,
     );
 
@@ -1323,7 +2025,14 @@ describe('TerminalScreen font size preference', () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     await render(
       <TerminalPreferenceProvider storage={terminalStorage}>
-        <TerminalScreen session={session} profileId={PROFILE_ID} loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)} />
+        <TerminalScreen
+          activeServerStore={createActiveServerStore().store}
+          listProfiles={async () => {
+            return [toProfileOf(CONNECT_OPTIONS)];
+          }}
+          loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)}
+          registry={createFakeRegistry(session)}
+        />
       </TerminalPreferenceProvider>,
     );
 

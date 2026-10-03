@@ -593,6 +593,59 @@ describe('TerminalSession.createTmuxSession', () => {
   });
 });
 
+describe('TerminalSession.cloneTmuxSession', () => {
+  it('creates the clone in the source session working directory', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
+    await session.start(profile);
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: '/srv/app\n' });
+
+    const wasCloned = await session.cloneTmuxSession({ nextSessionName: 'work-copy', sessionName: 'work' });
+
+    expect(wasCloned).toBe(true);
+    expect(bridge.execCalls).toContain(tmuxAttachUtil.toSessionPathScript({ sessionName: 'work' }));
+    expect(bridge.loginShellCalls).toContain(
+      tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work-copy', startPath: '/srv/app' })
+    );
+  });
+
+  it('creates the clone without a path when the source path cannot be read', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
+    await session.start(profile);
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: '' });
+
+    const wasCloned = await session.cloneTmuxSession({ nextSessionName: 'work-copy', sessionName: 'work' });
+
+    expect(wasCloned).toBe(true);
+    expect(bridge.loginShellCalls).toContain(
+      tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work-copy' })
+    );
+  });
+
+  it('returns false while not connected', async () => {
+    const { bridge, session } = createHarness();
+
+    const wasCloned = await session.cloneTmuxSession({ nextSessionName: 'work-copy', sessionName: 'work' });
+
+    expect(wasCloned).toBe(false);
+    expect(bridge.execCalls).toEqual([]);
+    expect(bridge.loginShellCalls).toEqual([]);
+  });
+
+  it('returns false when the path read fails', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
+    await session.start(profile);
+    bridge.queueExecResult(new Error('exec failed'));
+
+    const wasCloned = await session.cloneTmuxSession({ nextSessionName: 'work-copy', sessionName: 'work' });
+
+    expect(wasCloned).toBe(false);
+    expect(bridge.loginShellCalls).toEqual([]);
+  });
+});
+
 describe('TerminalSession.focusTmuxSession', () => {
   it('switches the attached client without writing to the terminal', async () => {
     const { bridge, session } = createHarness();

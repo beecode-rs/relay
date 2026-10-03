@@ -1,5 +1,5 @@
-import { ServersScreen } from '@/features/servers/servers-screen';
+import { TerminalScreen } from '@/features/terminal/terminal-screen';
 
-export default function Servers() {
-  return <ServersScreen />;
+export default function Terminal() {
+  return <TerminalScreen />;
 }

@@ -536,7 +536,7 @@ export function ServerFormScreen({
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
-        <ThemedText type="subtitle">{isEditing ? 'Edit Server' : 'Add Server'}</ThemedText>
+        <ThemedText type="subtitle">{isEditing ? 'Edit Instance' : 'Add Instance'}</ThemedText>
 
         <ThemedText type="small">Label</ThemedText>
         <ThemedTextInput
@@ -663,7 +663,7 @@ export function ServerFormScreen({
                 style={[styles.button, borderedStyle, deviceKey === null && styles.buttonDisabled]}
                 testID="device-key-authenticate-button"
               >
-                <ThemedText type="smallBold">Authenticate Device Key with Server</ThemedText>
+                <ThemedText type="smallBold">Authenticate Device Key with Instance</ThemedText>
               </Pressable>
             </View>
           </>

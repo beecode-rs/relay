@@ -5,7 +5,7 @@ import {
 } from '@expo-google-fonts/jetbrains-mono';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Keyboard, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, TextLayoutEvent } from 'react-native';
@@ -18,7 +18,8 @@ import { ExtraKeysRow } from '@/features/terminal/extra-keys-row';
 import { HiddenKeyboardInput } from '@/features/terminal/hidden-keyboard-input';
 import type { TerminalInputRef } from '@/features/terminal/hidden-keyboard-input';
 import type { TerminalModifierName } from '@/features/terminal/modifier-input';
-import { TmuxSessionsDrawer } from '@/features/terminal/tmux-sessions-drawer';
+import { ServersDrawer } from '@/features/terminal/servers-drawer';
+import type { ServersDrawerServer } from '@/features/terminal/servers-drawer';
 import { TerminalView } from '@/features/terminal/terminal-view';
 import { usePinchFontSize } from '@/features/terminal/use-pinch-font-size';
 import { useTerminalSelection } from '@/features/terminal/use-terminal-selection';
@@ -26,8 +27,11 @@ import { serverConnectOptions } from '@/services/connection/connect-options';
 import { serverLastSessionStore } from '@/services/connection/server-last-session-store';
 import type { ServerLastSessionStore } from '@/services/connection/server-last-session-store';
 import { mergeAcceptedHostKey } from '@/services/connection/server-profile';
+import type { ServerProfile } from '@/services/connection/server-profile';
 import { serverProfileStore } from '@/services/connection/server-profile-store';
-import { terminalSession } from '@/services/terminal/terminal-session';
+import { activeServerStore as defaultActiveServerStore } from '@/services/connection/active-server-store';
+import type { ActiveServerStore } from '@/services/connection/active-server-store';
+import { terminalSessionRegistry } from '@/services/terminal/terminal-session-registry';
 import type {
   TerminalSession,
   TerminalSessionState,
@@ -38,11 +42,13 @@ import type { TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 import { DEFAULT_TERMINAL_PREFERENCE } from '@/services/terminal/terminal-preference';
 import type { FontSizeStepDirection } from '@/services/terminal/terminal-preference';
 import { TerminalPreferenceService } from '@/services/terminal/terminal-preference-service';
+import { tmuxAttachUtil } from '@/services/terminal/tmux-attach';
 import type { SshConnectOptions } from '@/services/terminal/ssh-terminal-types';
 
 export type TerminalScreenSession = Pick<
   TerminalSession,
   | 'acceptHostKey'
+  | 'cloneTmuxSession'
   | 'createTmuxSession'
   | 'currentState'
   | 'detachTmuxSession'
@@ -67,12 +73,37 @@ export type TerminalScreenSession = Pick<
   | 'write'
 >;
 
+export type TerminalScreenRegistryEntry = {
+  profileId: string;
+  connectOptions: SshConnectOptions;
+  session: TerminalScreenSession;
+};
+
+export type TerminalScreenRegistry = {
+  list(): TerminalScreenRegistryEntry[];
+  find(profileId: string): TerminalScreenRegistryEntry | null;
+  ensureStarted(params: {
+    profileId: string;
+    connectOptions: SshConnectOptions;
+  }): Promise<TerminalScreenRegistryEntry>;
+  disconnect(profileId: string): void;
+  subscribe(listener: () => void): () => void;
+};
+
 export type ConnectOptionsLoader = (params: { id: string }) => Promise<SshConnectOptions | null>;
 
+export type TerminalScreenProfile = Pick<ServerProfile, 'host' | 'id' | 'label' | 'remotePath'>;
+
+export type ServerProfileLister = () => Promise<TerminalScreenProfile[]>;
+
+export type ServerProfileRemover = (params: { id: string }) => Promise<void>;
+
 export type TerminalScreenProps = {
-  session?: TerminalScreenSession;
-  profileId?: string;
+  registry?: TerminalScreenRegistry;
   loadConnectOptions?: ConnectOptionsLoader;
+  listProfiles?: ServerProfileLister;
+  removeProfile?: ServerProfileRemover;
+  activeServerStore?: ActiveServerStore;
   persistAcceptedHostKey?: (hostKeyLine: string) => Promise<void>;
   lastSessionStore?: ServerLastSessionStore;
 };
@@ -80,8 +111,30 @@ export type TerminalScreenProps = {
 type TerminalAreaSize = { heightPx: number; widthPx: number };
 type ProbeMetrics = { lineHeightPx: number; widthPx: number };
 
+type TmuxListingState = {
+  sessionNames: string[];
+  currentSessionName: string | null;
+  isLoading: boolean;
+  error: string | null;
+};
+
 const OUTPUT_TICK_MS = 32;
 const KEYBOARD_REFOCUS_DELAY_MS = 100;
+
+const EMPTY_SNAPSHOT: TerminalSnapshot = {
+  rows: [],
+  cursor: { x: 0, y: 0 },
+  firstLine: 0,
+  isAlternateBuffer: false,
+  viewportRowCount: 0,
+};
+
+const EMPTY_TMUX_LISTING: TmuxListingState = {
+  sessionNames: [],
+  currentSessionName: null,
+  isLoading: false,
+  error: null,
+};
 
 const statusDotColorOf = (status: TerminalSessionState['status']): string => {
   if (status === 'connected') {
@@ -127,8 +180,29 @@ const topBarTitleOf = (options: SshConnectOptions, currentSessionName: string | 
   return `${currentSessionName} - ${serverName}`;
 };
 
+const toDrawerServerStatus = (status: TerminalSessionState['status']): ServersDrawerServer['status'] => {
+  if (
+    status === 'connected' ||
+    status === 'connecting' ||
+    status === 'host-key-unknown' ||
+    status === 'host-key-changed' ||
+    status === 'error'
+  ) {
+    return status;
+  }
+  return 'connecting';
+};
+
 const defaultLoadConnectOptions: ConnectOptionsLoader = (params) => {
   return serverConnectOptions.build(params);
+};
+
+const defaultListProfiles: ServerProfileLister = async () => {
+  return serverProfileStore.list();
+};
+
+const defaultRemoveProfile: ServerProfileRemover = (params) => {
+  return serverProfileStore.remove(params);
 };
 
 export const screenBottomInsetOf = (keyboardHeight: number, navigationBarInset: number, os: string): number => {
@@ -188,28 +262,32 @@ function TerminalStatusView({ onAcceptHostKey, onEdit, onRejectHostKey, onReconn
 }
 
 export function TerminalScreen({
-  session = terminalSession,
-  profileId,
+  registry = terminalSessionRegistry,
   loadConnectOptions = defaultLoadConnectOptions,
+  listProfiles = defaultListProfiles,
+  removeProfile = defaultRemoveProfile,
+  activeServerStore = defaultActiveServerStore,
   persistAcceptedHostKey,
   lastSessionStore = serverLastSessionStore,
 }: TerminalScreenProps) {
   const [isFontsLoaded] = useFonts({ JetBrainsMono_400Regular, JetBrainsMono_700Bold });
-  const [connectOptions, setConnectOptions] = useState<SshConnectOptions | null>(null);
   const [hasCheckedProfile, setHasCheckedProfile] = useState(false);
+  const [isSetupNeeded, setIsSetupNeeded] = useState(false);
+  const [terminalTarget, setTerminalTarget] = useState<TerminalScreenRegistryEntry | null>(null);
+  const [registryEntries, setRegistryEntries] = useState<TerminalScreenRegistryEntry[]>(() => {
+    return registry.list();
+  });
+  const [savedProfiles, setSavedProfiles] = useState<TerminalScreenProfile[]>([]);
   const [sessionState, setSessionState] = useState<TerminalSessionState>(() => {
-    return session.currentState;
+    return { status: 'idle' };
   });
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(() => {
-    return session.snapshot();
+    return EMPTY_SNAPSHOT;
   });
+  const [tmuxListings, setTmuxListings] = useState<Record<string, TmuxListingState>>({});
   const [armedModifier, setArmedModifier] = useState<TerminalModifierName | null>(null);
   const [isModifierLocked, setIsModifierLocked] = useState(false);
-  const [isSessionsDrawerOpen, setIsSessionsDrawerOpen] = useState(false);
-  const [isTmuxListLoading, setIsTmuxListLoading] = useState(false);
-  const [tmuxListError, setTmuxListError] = useState<string | null>(null);
-  const [tmuxSessionNames, setTmuxSessionNames] = useState<string[]>([]);
-  const [currentTmuxSessionName, setCurrentTmuxSessionName] = useState<string | null>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [keyboardInsetHeight, setKeyboardInsetHeight] = useState(0);
   const [availableSize, setAvailableSize] = useState<TerminalAreaSize | null>(null);
@@ -240,52 +318,149 @@ export function TerminalScreen({
   const boldFontFamily = isFontsLoaded ? 'JetBrainsMono_700Bold' : 'monospace';
   const lineHeight = probeMetrics?.lineHeightPx ?? Math.round(fontSize * 1.3);
 
+  // Kept in sync for the focus-resolution below, which must not depend on the
+  // target itself: a stable callback keeps a drawer server switch from being
+  // overridden by a re-resolve with the not-yet-saved previous selection.
+  const terminalTargetRef = useRef<TerminalScreenRegistryEntry | null>(null);
   useEffect(() => {
-    const loadAndStart = async () => {
-      if (profileId === undefined) {
-        router.dismissTo('/');
-        return;
-      }
-      const options = await loadConnectOptions({ id: profileId });
+    terminalTargetRef.current = terminalTarget;
+  }, [terminalTarget]);
+
+  // The drawer lists every saved instance, connected or not, so the profile
+  // list is reloaded whenever it can change: focus (add/edit/remove return)
+  // and drawer open.
+  const reloadProfiles = useCallback(async (): Promise<TerminalScreenProfile[]> => {
+    const profiles = await listProfiles();
+    setSavedProfiles(profiles);
+
+    return profiles;
+  }, [listProfiles]);
+
+  // Resolve which instance the terminal should show: the remembered active
+  // one, falling back to the first instance with loadable credentials. Runs on
+  // mount and whenever the screen regains focus.
+  const resolveActiveServer = useCallback(async () => {
+    const storedId = await activeServerStore.find();
+    // Selection unchanged: keep whatever the terminal currently shows, be it a
+    // live session or a disconnected one waiting for a manual reconnect.
+    const currentTarget = terminalTargetRef.current;
+    if (storedId !== null && currentTarget !== null && currentTarget.profileId === storedId) {
+      return;
+    }
+    const profiles = await reloadProfiles();
+    const candidateIds = storedId !== null
+      ? [
+          storedId,
+          ...profiles
+            .map((profile) => {
+              return profile.id;
+            })
+            .filter((id) => {
+              return id !== storedId;
+            }),
+        ]
+      : profiles.map((profile) => {
+          return profile.id;
+        });
+    for (const candidateId of candidateIds) {
+      const options = await loadConnectOptions({ id: candidateId });
       if (options === null) {
-        router.dismissTo('/');
+        continue;
+      }
+      const entry = await registry.ensureStarted({ profileId: candidateId, connectOptions: options });
+      setIsSetupNeeded(false);
+      setHasCheckedProfile(true);
+      setTerminalTarget(entry);
+      return;
+    }
+    setTerminalTarget(null);
+    setIsSetupNeeded(true);
+    setHasCheckedProfile(true);
+  }, [activeServerStore, loadConnectOptions, reloadProfiles, registry]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void resolveActiveServer();
+    }, [resolveActiveServer])
+  );
+
+  // Remember the active server so the next launch reopens it directly.
+  useEffect(() => {
+    if (terminalTarget === null) {
+      return;
+    }
+    void activeServerStore.save({ id: terminalTarget.profileId });
+  }, [terminalTarget, activeServerStore]);
+
+  const activeSession = terminalTarget?.session ?? null;
+
+  // The active server's connection is gone (disconnect or remote close): show
+  // the next connected server; otherwise keep the disconnected one so its
+  // status view can offer a manual reconnect.
+  useEffect(() => {
+    const handleRegistryChange = () => {
+      const entries = registry.list();
+      setRegistryEntries(entries);
+      if (terminalTarget === null) {
         return;
       }
-      setConnectOptions(options);
-      setHasCheckedProfile(true);
-      if (session.status === 'idle' || !session.isActiveFor(options)) {
-        await session.start(options);
+      const isEntryAlive = entries.some((entry) => {
+        return entry.profileId === terminalTarget.profileId;
+      });
+      if (isEntryAlive) {
+        return;
+      }
+      const nextEntry = entries.find((entry) => {
+        return entry.session.status === 'connected';
+      });
+      if (nextEntry !== undefined) {
+        setTerminalTarget(nextEntry);
       }
     };
-    void loadAndStart();
-  }, [session, profileId, loadConnectOptions]);
+    return registry.subscribe(handleRegistryChange);
+  }, [registry, terminalTarget]);
+
+  // Reset the terminal view when the active session itself changes; later
+  // state arrives through the subscription below.
+  const [watchedSession, setWatchedSession] = useState<TerminalScreenSession | null>(null);
+  if (watchedSession !== activeSession) {
+    setWatchedSession(activeSession);
+    setSessionState(activeSession?.currentState ?? { status: 'idle' });
+    setSnapshot(activeSession?.snapshot() ?? EMPTY_SNAPSHOT);
+  }
 
   useEffect(() => {
-    return session.subscribe((state) => {
+    if (activeSession === null) {
+      return;
+    }
+    return activeSession.subscribe((state) => {
       setSessionState(state);
-      setSnapshot(session.snapshot());
-      if (state.status === 'closed') {
-        router.dismissTo('/');
-      }
     });
-  }, [session]);
+  }, [activeSession]);
 
   useEffect(() => {
     const pullOutput = () => {
-      const output = session.drainPendingOutput();
-      if (output === null) {
-        return;
-      }
-      setSnapshot(session.snapshot());
-      setTimeout(() => {
-        setSnapshot(session.snapshot());
-      }, 0);
+      // Background servers keep producing output; drain every batcher so they
+      // do not grow without bound, but only re-render for the active terminal.
+      registry.list().forEach((entry) => {
+        const output = entry.session.drainPendingOutput();
+        if (output === null) {
+          return;
+        }
+        if (entry.session !== activeSession) {
+          return;
+        }
+        setSnapshot(entry.session.snapshot());
+        setTimeout(() => {
+          setSnapshot(entry.session.snapshot());
+        }, 0);
+      });
     };
     const timer = setInterval(pullOutput, OUTPUT_TICK_MS);
     return () => {
       clearInterval(timer);
     };
-  }, [session]);
+  }, [registry, activeSession]);
 
   useEffect(() => {
     const showSubscription = Keyboard.addListener('keyboardDidShow', (e: KeyboardEvent) => {
@@ -306,7 +481,7 @@ export function TerminalScreen({
   }, []);
 
   useEffect(() => {
-    if (probeMetrics === null || availableSize === null) {
+    if (probeMetrics === null || availableSize === null || activeSession === null) {
       return;
     }
     const grid = charMetrics.gridSizeFromProbe({
@@ -316,8 +491,8 @@ export function TerminalScreen({
       probeLineHeightPx: probeMetrics.lineHeightPx,
       probeWidthPx: probeMetrics.widthPx,
     });
-    session.resize({ cols: grid.cols, rows: grid.rows });
-  }, [availableSize, probeMetrics, session]);
+    activeSession.resize({ cols: grid.cols, rows: grid.rows });
+  }, [availableSize, probeMetrics, activeSession]);
 
   // Grid sizing must come from the surface that renders the rows - the outer
   // terminal area can report a taller first layout before sibling views settle,
@@ -374,15 +549,12 @@ export function TerminalScreen({
     }
   };
 
-  const handleWrite = useCallback(
-    (sequence: string) => {
-      setFollowRequestCount((count) => {
-        return count + 1;
-      });
-      session.write(sequence);
-    },
-    [session]
-  );
+  const handleWrite = (sequence: string) => {
+    setFollowRequestCount((count) => {
+      return count + 1;
+    });
+    activeSession?.write(sequence);
+  };
 
   const handleFontSizeStep = useCallback(
     (params: { direction: FontSizeStepDirection }) => {
@@ -400,12 +572,9 @@ export function TerminalScreen({
 
   const pinchPanHandlers = usePinchFontSize({ onStep: handleFontSizeStep });
 
-  const handleScrollRows = useCallback(
-    (params: { rows: number }) => {
-      session.scrollRows({ rows: params.rows });
-    },
-    [session]
-  );
+  const handleScrollRows = (params: { rows: number }) => {
+    activeSession?.scrollRows({ rows: params.rows });
+  };
 
   const terminalSelection = useTerminalSelection({
     onCopyText: async (text: string): Promise<void> => {
@@ -450,43 +619,51 @@ export function TerminalScreen({
     }
     shownTmuxPromptRef.current = tmuxPrompt;
     const dismiss = () => {
-      session.dismissTmuxPrompt();
+      activeSession?.dismissTmuxPrompt();
     };
     const installCommand = tmuxPrompt.installCommand;
     if (installCommand === null) {
       Alert.alert(
         'tmux is not installed',
-        'tmux keeps terminal sessions alive on the server. Install it with this system package manager, then reconnect.',
+        'tmux keeps terminal sessions alive on the instance. Install it with this system package manager, then reconnect.',
         [{ onPress: dismiss, text: 'OK' }]
       );
       return;
     }
     Alert.alert(
       'tmux is not installed',
-      `tmux keeps terminal sessions alive on the server.\n\nInstall it now? This runs in the terminal and may ask for your password:\n${installCommand}`,
+      `tmux keeps terminal sessions alive on the instance.\n\nInstall it now? This runs in the terminal and may ask for your password:\n${installCommand}`,
       [
         { onPress: dismiss, style: 'cancel', text: 'Not now' },
         {
           onPress: () => {
-            handleWrite(`${installCommand}\r`);
+            // Write to the session that raised the prompt, even if the user
+            // switched servers while the alert was open.
+            setFollowRequestCount((count) => {
+              return count + 1;
+            });
+            activeSession?.write(`${installCommand}\r`);
             dismiss();
           },
           text: 'Install',
         },
       ]
     );
-  }, [handleWrite, session, sessionState.tmuxPrompt]);
+  }, [activeSession, sessionState.tmuxPrompt]);
 
   const handleDisconnect = () => {
+    if (terminalTarget === null) {
+      return;
+    }
+    const profileId = terminalTarget.profileId;
     Alert.alert(
       'Disconnect',
-      `Close the connection to ${connectOptions?.host ?? 'this server'}?`,
+      `Close the connection to ${terminalTarget.connectOptions.host}?`,
       [
         { style: 'cancel', text: 'Cancel' },
         {
           onPress: () => {
-            session.end();
-            router.dismissTo('/');
+            registry.disconnect(profileId);
           },
           style: 'destructive',
           text: 'Disconnect',
@@ -496,155 +673,347 @@ export function TerminalScreen({
   };
 
   const rememberLastTmuxSession = useCallback(
-    (sessionName: string | null) => {
-      if (profileId === undefined) {
-        return;
-      }
+    (targetProfileId: string, sessionName: string | null) => {
       if (sessionName === null) {
-        void lastSessionStore.clear({ id: profileId });
+        void lastSessionStore.clear({ id: targetProfileId });
         return;
       }
-      void lastSessionStore.save({ id: profileId, sessionName });
+      void lastSessionStore.save({ id: targetProfileId, sessionName });
     },
-    [lastSessionStore, profileId]
+    [lastSessionStore]
   );
 
   const applyTmuxListResult = useCallback(
-    (result: TmuxSessionListResult) => {
-      if (result.kind === 'error') {
-        setTmuxSessionNames([]);
-        setTmuxListError(result.message);
-        setCurrentTmuxSessionName(null);
-
-        return;
-      }
-      setTmuxSessionNames(result.sessionNames);
-      setTmuxListError(null);
-      setCurrentTmuxSessionName(result.currentSessionName);
-      if (result.sessionNames.length > 0) {
-        rememberLastTmuxSession(result.currentSessionName);
+    (targetProfileId: string, result: TmuxSessionListResult) => {
+      setTmuxListings((previous) => {
+        if (result.kind === 'error') {
+          return {
+            ...previous,
+            [targetProfileId]: {
+              ...(previous[targetProfileId] ?? EMPTY_TMUX_LISTING),
+              sessionNames: [],
+              currentSessionName: null,
+              error: result.message,
+            },
+          };
+        }
+        return {
+          ...previous,
+          [targetProfileId]: {
+            ...(previous[targetProfileId] ?? EMPTY_TMUX_LISTING),
+            sessionNames: result.sessionNames,
+            currentSessionName: result.currentSessionName,
+            error: null,
+          },
+        };
+      });
+      if (result.kind === 'sessions' && result.sessionNames.length > 0) {
+        rememberLastTmuxSession(targetProfileId, result.currentSessionName);
       }
     },
     [rememberLastTmuxSession]
   );
 
-  const refreshTmuxSessions = useCallback(
-    () => {
-      setIsTmuxListLoading(true);
-      void session
+  const refreshTmuxListing = useCallback(
+    (targetProfileId: string) => {
+      const entry = registry.find(targetProfileId);
+      if (entry === null) {
+        return;
+      }
+      setTmuxListings((previous) => {
+        return {
+          ...previous,
+          [targetProfileId]: {
+            ...(previous[targetProfileId] ?? EMPTY_TMUX_LISTING),
+            isLoading: true,
+          },
+        };
+      });
+      void entry.session
         .listTmuxSessions()
-        .then(applyTmuxListResult)
+        .then((result) => {
+          applyTmuxListResult(targetProfileId, result);
+        })
         .finally(() => {
-          setIsTmuxListLoading(false);
+          setTmuxListings((previous) => {
+            const listing = previous[targetProfileId];
+            if (listing === undefined) {
+              return previous;
+            }
+            return { ...previous, [targetProfileId]: { ...listing, isLoading: false } };
+          });
         });
     },
-    [applyTmuxListResult, session]
+    [applyTmuxListResult, registry]
   );
 
-  // tmux auto-attaches in the shell right after connect; refresh the listing
-  // once so the top bar shows the attached session name without opening the drawer.
+  // tmux auto-attaches in the shell right after connect; refresh the active
+  // listing once so the top bar shows the attached session name.
   useEffect(() => {
-    if (sessionState.status !== 'connected') {
+    if (sessionState.status !== 'connected' || terminalTarget === null || activeSession === null) {
       return;
     }
-    void session.listTmuxSessions().then(applyTmuxListResult);
-  }, [applyTmuxListResult, session, sessionState.status]);
+    void activeSession.listTmuxSessions().then((result) => {
+      applyTmuxListResult(terminalTarget.profileId, result);
+    });
+  }, [applyTmuxListResult, terminalTarget, activeSession, sessionState.status]);
 
-  const handleOpenSessionsDrawer = () => {
-    setIsSessionsDrawerOpen(true);
-    refreshTmuxSessions();
+  const handleOpenDrawer = () => {
+    setIsDrawerOpen(true);
+    void reloadProfiles();
+    registry.list().forEach((entry) => {
+      if (entry.session.status === 'connected') {
+        refreshTmuxListing(entry.profileId);
+      }
+    });
   };
 
-  const handleCloseSessionsDrawer = () => {
-    setIsSessionsDrawerOpen(false);
+  const handleCloseDrawer = () => {
+    setIsDrawerOpen(false);
   };
 
   const handleOpenSettings = () => {
-    setIsSessionsDrawerOpen(false);
+    setIsDrawerOpen(false);
     router.navigate('/settings');
   };
 
-  const handleSelectTmuxSession = (sessionName: string) => {
-    setIsSessionsDrawerOpen(false);
-    void session.focusTmuxSession({ sessionName }).then((wasFocused) => {
+  const handleAddServer = () => {
+    setIsDrawerOpen(false);
+    router.push('/connect');
+  };
+
+  const handleDrawerEditServer = (targetProfileId: string) => {
+    setIsDrawerOpen(false);
+    router.push({ params: { id: targetProfileId }, pathname: '/connect' });
+  };
+
+  // Selecting an instance row shows its detached terminal: a saved-but-not-
+  // connected instance is started first, then tmux is detached to the raw shell.
+  const handleDrawerSelectServer = (targetProfileId: string) => {
+    setIsDrawerOpen(false);
+    const entry = registry.find(targetProfileId);
+    if (entry !== null) {
+      selectServerEntry(entry, false);
+      return;
+    }
+    const start = async (): Promise<TerminalScreenRegistryEntry | null> => {
+      const options = await loadConnectOptions({ id: targetProfileId });
+      if (options === null) {
+        return null;
+      }
+      try {
+        return await registry.ensureStarted({ profileId: targetProfileId, connectOptions: options });
+      } catch {
+        return null;
+      }
+    };
+    void start().then((startedEntry) => {
+      if (startedEntry !== null) {
+        selectServerEntry(startedEntry, true);
+      }
+    });
+  };
+
+  const selectServerEntry = (entry: TerminalScreenRegistryEntry, wasStartedNow: boolean) => {
+    setTerminalTarget(entry);
+    setIsSetupNeeded(false);
+    // The instance row is the "machine" view: detach tmux and show the raw shell.
+    void (async () => {
+      if (wasStartedNow) {
+        // A fresh connection may still be auto-attaching its remembered tmux
+        // session; let that settle before detaching to the raw shell.
+        applyTmuxListResult(entry.profileId, await entry.session.listTmuxSessions());
+      }
+      const wasDetached = await entry.session.detachTmuxSession();
+      if (!wasDetached) {
+        return;
+      }
+      setTmuxListings((previous) => {
+        const listing = previous[entry.profileId];
+        if (listing === undefined) {
+          return previous;
+        }
+        return { ...previous, [entry.profileId]: { ...listing, currentSessionName: null } };
+      });
+      rememberLastTmuxSession(entry.profileId, null);
+    })();
+  };
+
+  const setCurrentTmuxSession = (targetProfileId: string, sessionName: string) => {
+    setTmuxListings((previous) => {
+      const listing = previous[targetProfileId];
+      if (listing === undefined) {
+        return previous;
+      }
+      return { ...previous, [targetProfileId]: { ...listing, currentSessionName: sessionName } };
+    });
+  };
+
+  const handleDrawerSelectSession = (targetProfileId: string, sessionName: string) => {
+    setIsDrawerOpen(false);
+    const entry = registry.find(targetProfileId);
+    if (entry === null) {
+      return;
+    }
+    setTerminalTarget(entry);
+    void entry.session.focusTmuxSession({ sessionName }).then((wasFocused) => {
       if (wasFocused) {
-        setCurrentTmuxSessionName(sessionName);
-        rememberLastTmuxSession(sessionName);
+        setCurrentTmuxSession(targetProfileId, sessionName);
+        rememberLastTmuxSession(targetProfileId, sessionName);
       }
     });
   };
 
-  const handleDeleteTmuxSession = (sessionName: string) => {
-    void session.killTmuxSession({ sessionName }).then((wasKilled) => {
+  const handleDrawerDeleteSession = (targetProfileId: string, sessionName: string) => {
+    const entry = registry.find(targetProfileId);
+    if (entry === null) {
+      return;
+    }
+    void entry.session.killTmuxSession({ sessionName }).then((wasKilled) => {
       if (wasKilled) {
-        refreshTmuxSessions();
+        refreshTmuxListing(targetProfileId);
       }
     });
   };
 
-  const handleDetachTmux = () => {
-    setIsSessionsDrawerOpen(false);
-    void session.detachTmuxSession().then((wasDetached) => {
-      if (wasDetached) {
-        setCurrentTmuxSessionName(null);
-        rememberLastTmuxSession(null);
-      }
-    });
-  };
-
-  const handleRenameTmuxSession = (sessionName: string, nextSessionName: string) => {
-    void session.renameTmuxSession({ nextSessionName, sessionName }).then((wasRenamed) => {
+  const handleDrawerRenameSession = (
+    targetProfileId: string,
+    sessionName: string,
+    nextSessionName: string
+  ) => {
+    const entry = registry.find(targetProfileId);
+    if (entry === null) {
+      return;
+    }
+    void entry.session.renameTmuxSession({ nextSessionName, sessionName }).then((wasRenamed) => {
       if (wasRenamed) {
-        refreshTmuxSessions();
+        refreshTmuxListing(targetProfileId);
       }
     });
   };
 
-  const handleCreateTmuxSession = (sessionName: string, remotePath: string) => {
-    setIsSessionsDrawerOpen(false);
-    void session
+  const handleDrawerCloneSession = (targetProfileId: string, sessionName: string) => {
+    const entry = registry.find(targetProfileId);
+    if (entry === null) {
+      return;
+    }
+    const nextSessionName = tmuxAttachUtil.toCloneSessionName({
+      sessionName,
+      sessionNames: tmuxListings[targetProfileId]?.sessionNames ?? [],
+    });
+    void entry.session.cloneTmuxSession({ nextSessionName, sessionName }).then((wasCloned) => {
+      if (wasCloned) {
+        refreshTmuxListing(targetProfileId);
+      }
+    });
+  };
+
+  const handleDrawerCreateSession = (
+    targetProfileId: string,
+    sessionName: string,
+    remotePath: string
+  ) => {
+    setIsDrawerOpen(false);
+    const entry = registry.find(targetProfileId);
+    if (entry === null) {
+      return;
+    }
+    setTerminalTarget(entry);
+    void entry.session
       .createTmuxSession({ sessionName, startPath: remotePath })
       .then((wasCreated) => {
         if (!wasCreated) {
           return false;
         }
-        return session.focusTmuxSession({ sessionName });
+        return entry.session.focusTmuxSession({ sessionName });
       })
       .then((wasFocused) => {
         if (wasFocused) {
-          setCurrentTmuxSessionName(sessionName);
-          rememberLastTmuxSession(sessionName);
+          setCurrentTmuxSession(targetProfileId, sessionName);
+          rememberLastTmuxSession(targetProfileId, sessionName);
         }
       });
   };
 
-  const openTmuxBrowseSession = useCallback(() => {
-    return Promise.resolve({
-      listDirectories: (params: { path: string }) => {
-        return session.listRemoteDirectories({ path: params.path });
-      },
-      disconnect: () => {
+  const handleDrawerDisconnectServer = (targetProfileId: string) => {
+    if (terminalTarget !== null && targetProfileId === terminalTarget.profileId) {
+      setIsDrawerOpen(false);
+    }
+    registry.disconnect(targetProfileId);
+  };
+
+  // Removing an instance deletes the profile and its credentials; a live
+  // connection is closed first, and when the active instance is removed the
+  // terminal re-resolves to the next remaining one.
+  const handleDrawerRemoveServer = (targetProfileId: string) => {
+    const wasActive = terminalTarget !== null && targetProfileId === terminalTarget.profileId;
+    if (wasActive) {
+      setIsDrawerOpen(false);
+    }
+    registry.disconnect(targetProfileId);
+    void removeProfile({ id: targetProfileId })
+      .then(async () => {
+        const activeId = await activeServerStore.find();
+        if (activeId === targetProfileId) {
+          await activeServerStore.clear();
+        }
+        await reloadProfiles();
+        if (wasActive) {
+          await resolveActiveServer();
+        }
+      })
+      .catch(() => {
         return;
-      },
-    });
-  }, [session]);
+      });
+  };
+
+  const openTmuxBrowseSession = useCallback(
+    (targetProfileId: string) => {
+      return Promise.resolve({
+        listDirectories: (params: { path: string }) => {
+          const entry = registry.find(targetProfileId);
+          if (entry === null) {
+            return Promise.resolve([]);
+          }
+          return entry.session.listRemoteDirectories({ path: params.path });
+        },
+        disconnect: () => {
+          return;
+        },
+      });
+    },
+    [registry]
+  );
 
   const handleReconnect = () => {
-    if (connectOptions === null) {
+    if (terminalTarget === null) {
       return;
     }
-    void session.start(connectOptions);
+    const { profileId, connectOptions } = terminalTarget;
+    // The old entry left the registry when it closed; ensureStarted re-adds it
+    // (on a fresh session) and hands back the live entry.
+    void registry
+      .ensureStarted({ profileId, connectOptions })
+      .then((entry) => {
+        setTerminalTarget(entry);
+      })
+      .catch(() => {
+        return;
+      });
   };
 
   const handleEdit = () => {
-    router.replace({ params: { id: profileId }, pathname: '/connect' });
+    if (terminalTarget === null) {
+      return;
+    }
+    router.push({ params: { id: terminalTarget.profileId }, pathname: '/connect' });
   };
 
   const persistAcceptedHostKeyToStore = async (hostKeyLine: string) => {
-    if (profileId === undefined) {
+    if (terminalTarget === null) {
       return;
     }
-    const profile = await serverProfileStore.findById({ id: profileId });
+    const profile = await serverProfileStore.findById({ id: terminalTarget.profileId });
     if (profile === null) {
       return;
     }
@@ -662,33 +1031,94 @@ export function TerminalScreen({
       return;
     }
     void (persistAcceptedHostKey ?? persistAcceptedHostKeyToStore)(pendingHostKey.hostKeyLine);
-    session.acceptHostKey();
+    activeSession?.acceptHostKey();
   };
 
   const handleRejectHostKey = () => {
-    session.rejectHostKey();
+    activeSession?.rejectHostKey();
   };
 
-  if (!hasCheckedProfile || connectOptions === null) {
+  if (!hasCheckedProfile) {
     return null;
   }
 
+  if (isSetupNeeded) {
+    return (
+      <View style={[styles.screen, styles.setupScreen, { paddingTop: safeAreaInsets.top }]} testID="terminal-setup">
+        <Text style={styles.statusText}>No instances configured</Text>
+        <Text style={styles.setupHint}>Add an instance to start an SSH terminal session.</Text>
+        <Pressable
+          accessibilityLabel="Add instance"
+          accessibilityRole="button"
+          onPress={() => {
+            router.push('/connect');
+          }}
+          style={[styles.statusButton, styles.reconnectButton]}
+          testID="terminal-setup-add-server"
+        >
+          <Text style={styles.statusButtonText}>Add instance</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   const isTerminalActive = sessionState.status === 'connected';
+  // The drawer's first level is every saved instance; registry entries without
+  // a saved profile (removed elsewhere) keep their row while the connection lives.
+  const drawerProfileById = new Map<string, TerminalScreenProfile>(
+    savedProfiles.map((profile) => {
+      return [profile.id, profile];
+    })
+  );
+  registryEntries.forEach((entry) => {
+    if (!drawerProfileById.has(entry.profileId)) {
+      drawerProfileById.set(entry.profileId, {
+        host: entry.connectOptions.host,
+        id: entry.profileId,
+        label: toServerDisplayNameOf(entry.connectOptions),
+        remotePath: entry.connectOptions.remotePath,
+      });
+    }
+  });
+  const drawerServers: ServersDrawerServer[] = [...drawerProfileById.values()].map((profile) => {
+    const entry = registryEntries.find((candidate) => {
+      return candidate.profileId === profile.id;
+    });
+    const listing = tmuxListings[profile.id] ?? EMPTY_TMUX_LISTING;
+    return {
+      profileId: profile.id,
+      displayName: profile.label === '' ? profile.host : profile.label,
+      status:
+        entry === undefined
+          ? 'disconnected'
+          : toDrawerServerStatus(entry.session.currentState.status),
+      sessionNames: listing.sessionNames,
+      currentSessionName: listing.currentSessionName,
+      defaultPath: profile.remotePath ?? '',
+      isLoading: listing.isLoading,
+      listError: listing.error,
+    };
+  });
 
   return (
     <View style={[styles.screen, keyboardInsetStyle, landscapeInsetStyle]} testID="terminal-screen">
       <View style={[styles.topBar, { paddingTop: safeAreaInsets.top }]}>
         <Pressable
-          accessibilityLabel="Sessions"
+          accessibilityLabel="Instances"
           accessibilityRole="button"
-          onPress={handleOpenSessionsDrawer}
+          onPress={handleOpenDrawer}
           style={styles.menuButton}
         >
           <MaterialCommunityIcons color={constant.terminal.fg} name="menu" size={24} />
         </Pressable>
         <View style={[styles.statusDot, { backgroundColor: statusDotColorOf(sessionState.status) }]} />
         <Text numberOfLines={1} style={styles.hostText}>
-          {topBarTitleOf(connectOptions, currentTmuxSessionName)}
+          {terminalTarget === null
+            ? ''
+            : topBarTitleOf(
+                terminalTarget.connectOptions,
+                tmuxListings[terminalTarget.profileId]?.currentSessionName ?? null
+              )}
         </Text>
         <Pressable
           accessibilityLabel="Disconnect"
@@ -710,7 +1140,7 @@ export function TerminalScreen({
               fontFamily={fontFamily}
               fontSize={fontSize}
               isCursorVisible
-              isRemoteScrollEnabled={session.isRemoteScrollEnabled}
+              isRemoteScrollEnabled={activeSession?.isRemoteScrollEnabled ?? false}
               lineHeight={lineHeight}
               onScrollRows={handleScrollRows}
               onSelectionLongPress={terminalSelection.startAtPosition}
@@ -744,7 +1174,7 @@ export function TerminalScreen({
         <ExtraKeysRow
           armedModifier={armedModifier}
           isSelectionAcceptable={terminalSelection.isAcceptable}
-          isApplicationCursorMode={session.isApplicationCursorKeys}
+          isApplicationCursorMode={activeSession?.isApplicationCursorKeys ?? false}
           isConnected={isTerminalActive}
           isKeyboardVisible={isKeyboardVisible}
           isLandscape={isLandscape}
@@ -765,21 +1195,24 @@ export function TerminalScreen({
         onModifierUsed={handleModifierUsed}
         onWrite={handleWrite}
       />
-      <TmuxSessionsDrawer
-        currentSessionName={currentTmuxSessionName}
-        defaultPath={connectOptions?.remotePath ?? ''}
-        isLoading={isTmuxListLoading}
-        isOpen={isSessionsDrawerOpen}
-        listError={tmuxListError}
-        onClose={handleCloseSessionsDrawer}
-        onCreate={handleCreateTmuxSession}
+      <ServersDrawer
+        currentProfileId={terminalTarget?.profileId ?? null}
+        isOpen={isDrawerOpen}
+        onClose={handleCloseDrawer}
+        onAddServer={handleAddServer}
+        onCloneSession={handleDrawerCloneSession}
+        onCreateSession={handleDrawerCreateSession}
+        onDeleteSession={handleDrawerDeleteSession}
+        onDisconnectServer={handleDrawerDisconnectServer}
+        onEditServer={handleDrawerEditServer}
         onOpenSettings={handleOpenSettings}
-        onDelete={handleDeleteTmuxSession}
-        onDetach={handleDetachTmux}
-        onRename={handleRenameTmuxSession}
-        onSelect={handleSelectTmuxSession}
+        onRefreshServer={refreshTmuxListing}
+        onRemoveServer={handleDrawerRemoveServer}
+        onRenameSession={handleDrawerRenameSession}
+        onSelectServer={handleDrawerSelectServer}
+        onSelectSession={handleDrawerSelectSession}
         openBrowseSession={openTmuxBrowseSession}
-        sessionNames={tmuxSessionNames}
+        servers={drawerServers}
       />
     </View>
   );
@@ -841,6 +1274,18 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: 24,
+  },
+  setupScreen: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+  },
+  setupHint: {
+    color: '#9e9e9e',
+    fontSize: 13,
+    marginTop: 8,
+    textAlign: 'center',
   },
   statusText: {
     color: constant.terminal.fg,

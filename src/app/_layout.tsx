@@ -28,8 +28,7 @@ const ThemedAppRoot = (): JSX.Element => {
         <AnimatedSplashOverlay />
         <Stack>
           <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="connect" options={{ title: 'Server' }} />
-          <Stack.Screen name="terminal" options={{ headerShown: false }} />
+          <Stack.Screen name="connect" options={{ title: 'Instance' }} />
           <Stack.Screen name="settings" options={{ headerShown: false }} />
           <Stack.Screen name="about" options={{ headerShown: false }} />
         </Stack>

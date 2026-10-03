@@ -223,7 +223,7 @@ describe('ServerFormScreen (add)', () => {
   it('renders the add title for a new server', async () => {
     await render(<ServerFormScreen store={createStore().store} credentialStore={createCredentialStore()} />);
 
-    expect(screen.getByText('Add Server')).toBeTruthy();
+    expect(screen.getByText('Add Instance')).toBeTruthy();
   });
 
   it('saves the profile with entered secrets and navigates back', async () => {
@@ -372,7 +372,7 @@ describe('ServerFormScreen (clone)', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Add Server')).toBeTruthy();
+      expect(screen.getByText('Add Instance')).toBeTruthy();
       expect(screen.getByDisplayValue('Example (copy)')).toBeTruthy();
     });
     expect(screen.getByDisplayValue('example.com')).toBeTruthy();
@@ -625,7 +625,7 @@ describe('ServerFormScreen device key', () => {
   };
 
   const openInstallModal = async () => {
-    await fireEvent.press(screen.getByText('Authenticate Device Key with Server'));
+    await fireEvent.press(screen.getByText('Authenticate Device Key with Instance'));
     await screen.findByTestId('device-key-install-modal');
   };
 

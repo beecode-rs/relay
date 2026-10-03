@@ -331,6 +331,26 @@ export class TerminalSession {
     }
   }
 
+  // A clone is a new session started in the source session's working directory;
+  // when the directory cannot be read the clone starts in the default location.
+  async cloneTmuxSession(params: { nextSessionName: string; sessionName: string }): Promise<boolean> {
+    const seq = ++this.tmuxCheckSeq;
+    if (this.state.status !== 'connected') {
+      return false;
+    }
+    let startPath: string | undefined;
+    try {
+      const result = await this.port.exec(tmuxAttachUtil.toSessionPathScript({ sessionName: params.sessionName }));
+      if (seq !== this.tmuxCheckSeq || this.state.status !== 'connected') {
+        return false;
+      }
+      startPath = tmuxAttachUtil.toSessionPathOf({ stdout: result.stdout }) ?? undefined;
+    } catch {
+      return false;
+    }
+    return this.createTmuxSession({ sessionName: params.nextSessionName, startPath });
+  }
+
   async focusTmuxSession(params: { sessionName: string }): Promise<boolean> {
     if (this.state.status !== 'connected') {
       return false;
@@ -541,5 +561,3 @@ export class TerminalSession {
     }
   }
 }
-
-export const terminalSession = new TerminalSession({});
