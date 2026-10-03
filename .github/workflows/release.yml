@@ -67,7 +67,7 @@ jobs:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload.jks
       - run: node scripts/patch-android-release-signing.mjs
-      - run: ./gradlew assembleRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease
+      - run: ./gradlew --no-build-cache assembleRelease
         working-directory: android
       - name: Stage artifact
         run: |

@@ -63,7 +63,7 @@
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
     "android-rebuild": "expo prebuild -p android --clean && pnpm run android",
-    "build:android-release": "expo prebuild -p android --clean --no-install && node scripts/patch-android-build.mjs && cd android && ./gradlew assembleRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease",
+    "build:android-release": "flock -n -o /tmp/relay-android-release.lock sh -c 'expo prebuild -p android --clean --no-install && node scripts/patch-android-build.mjs && cd android && ./gradlew --no-build-cache assembleRelease' || { echo 'another android release build is already running — wait for it to finish'; exit 1; }",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
