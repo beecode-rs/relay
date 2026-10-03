@@ -2,7 +2,7 @@
   "expo": {
     "name": "Relay",
     "slug": "relay",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "orientation": "default",
     "icon": "./resource/icon/icon.png",
     "scheme": "relay",
@@ -10,7 +10,7 @@
     "ios": {
       "icon": "./resource/icon/icon.png",
       "bundleIdentifier": "com.milos.becode.rs.relay",
-      "buildNumber": "0.2.0",
+      "buildNumber": "0.2.1",
       "entitlements": {
         "keychain-access-groups": [
           "$(AppIdentifierPrefix)com.beecode.devicekeys"
@@ -18,7 +18,7 @@
       }
     },
     "android": {
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#101010",
         "foregroundImage": "./resource/icon/adaptive-icon.png",
