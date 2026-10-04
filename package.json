@@ -58,13 +58,13 @@
     "ws": "^8.22.0"
   },
   "scripts": {
-    "android-release": "pnpm run android -- --variant release",
-    "start": "expo start --dev-client",
+    "android-release": "expo prebuild -p android --no-install && node scripts/patch-android-build.mjs && expo run:android --variant release",
+    "start": "APP_VARIANT=development expo start --dev-client",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo run:android",
-    "android-rebuild": "expo prebuild -p android --clean && pnpm run android",
+    "android": "APP_VARIANT=development expo prebuild -p android --no-install && node scripts/patch-android-build.mjs && expo run:android",
+    "android-rebuild": "APP_VARIANT=development expo prebuild -p android --clean && node scripts/patch-android-build.mjs && pnpm run android",
     "build:android-release": "flock -n -o /tmp/relay-android-release.lock sh -c 'expo prebuild -p android --clean --no-install && node scripts/patch-android-build.mjs && cd android && ./gradlew --no-build-cache assembleRelease' || { echo 'another android release build is already running — wait for it to finish'; exit 1; }",
-    "ios": "expo run:ios",
+    "ios": "APP_VARIANT=development expo prebuild -p ios && expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
