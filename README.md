@@ -28,6 +28,25 @@ A small Expo (React Native) app for Android and iOS with a built-in SSH terminal
 
 Relay is in early development and is not on Google Play or the App Store — packaged releases are published on the [GitHub Releases](https://github.com/beecode-rs/relay/releases) page (see [Download & install](#download--install)), and you can always build from source. It was built through rapid AI-assisted iteration rather than carefully reviewed engineering, so expect rough edges, missing pieces, and breaking changes without notice.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="resource/screenshots/terminal-screen.png" width="170" alt="Terminal running a remote shell" /></td>
+    <td><img src="resource/screenshots/side-menu-multi-sessions-multi-instances.png" width="170" alt="Side menu with multiple tmux sessions" /></td>
+    <td><img src="resource/screenshots/keyboard-with-extra-keys.png" width="170" alt="Keyboard with the extra keys row" /></td>
+    <td><img src="resource/screenshots/keyboard-with-function-keys.png" width="170" alt="Keyboard with the function keys row" /></td>
+    <td><img src="resource/screenshots/select-text-functionality.png" width="170" alt="Selecting text in the terminal" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Terminal</sub></td>
+    <td align="center"><sub>tmux sessions</sub></td>
+    <td align="center"><sub>Extra keys row</sub></td>
+    <td align="center"><sub>Function keys row</sub></td>
+    <td align="center"><sub>Text selection</sub></td>
+  </tr>
+</table>
+
 ## Download & install
 
 Grab the latest artifacts from the [GitHub Releases](https://github.com/beecode-rs/relay/releases/latest) page. Every `v*` tag produces one Android APK and one iOS IPA.
@@ -87,64 +106,11 @@ Passwords, private keys, and accepted host keys stay on the device, stored in th
 
 ## Development
 
-Requires [Node.js](https://nodejs.org) and [pnpm](https://pnpm.io).
-
-```bash
-git clone git@github.com:beecode-rs/relay.git
-cd relay
-pnpm install
-pnpm android
-```
-
-`pnpm android` (or `pnpm ios`) builds and installs the development client on a connected device or emulator; `pnpm start` then starts the Metro dev server for it. Use `pnpm exec expo install <package>` instead of `pnpm add` so dependency versions stay SDK-compatible.
-
-Web has no raw TCP sockets, so SSH on web goes through a local WebSocket relay:
-
-```bash
-pnpm relay                                      # ws://localhost:4022
-EXPO_PUBLIC_SSH_RELAY_URL=ws://localhost:4022 pnpm web
-```
-
-Automated gates:
-
-- `pnpm typecheck`: TypeScript, no emit
-- `pnpm lint`: ESLint (expo lint)
-- `pnpm test`: Jest (jest-expo preset, node environment)
-- `pnpm dlx expo-doctor`: diagnose dependency and config issues
+Requires [Node.js](https://nodejs.org) and [pnpm](https://pnpm.io). Setup, the web SSH relay, and the automated quality gates are documented in [resource/docs/DEVELOPMENT.md](resource/docs/DEVELOPMENT.md).
 
 ## Releasing
 
-Releases are tag-driven. From `main`:
-
-```bash
-pnpm release:patch   # or release:minor / release:major
-```
-
-That bumps the version (`package.json` + `app.json`, including `android.versionCode` and `ios.buildNumber`), commits, tags `v<version>`, and pushes. GitHub Actions then runs the quality gate, builds the Android APK and the unsigned iOS IPA — failing if the tag does not match the version in `app.json` — and publishes both to the Releases page with auto-generated notes. The workflow can also be run manually from the Actions tab as a dry run: it builds both artifacts but skips the release step.
-
-The script pushes to the `github` remote when one exists, otherwise `origin`. If you keep Gitea as `origin`, add the GitHub remote once:
-
-```bash
-git remote add github git@github.com:beecode-rs/relay.git
-```
-
-### One-time Android signing setup
-
-CI signs release APKs with a keystore kept in GitHub secrets. Generate it once and keep the original safe (it is gitignored via `*.jks`) — without it, future releases cannot install as updates over existing installs:
-
-```bash
-keytool -genkey -v -keystore relay-upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias relay-upload
-base64 -i relay-upload.jks
-```
-
-Then add these secrets to the GitHub repository:
-
-| Secret | Value |
-| --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | the base64 output above |
-| `RELAY_ANDROID_STORE_PASSWORD` | the keystore password |
-| `RELAY_ANDROID_KEY_ALIAS` | `relay-upload` |
-| `RELAY_ANDROID_KEY_PASSWORD` | the key password |
+Releases are tag-driven (`pnpm release:patch` / `release:minor` / `release:major` from `main`) and built by GitHub Actions — see [resource/docs/RELEASING.md](resource/docs/RELEASING.md), which also covers the one-time Android signing setup.
 
 ## Architecture
 
