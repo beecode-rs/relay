@@ -32,15 +32,21 @@ Relay is in early development and is not on Google Play or the App Store — pac
 
 <table>
   <tr>
-    <td><img src="resource/screenshots/terminal-screen.png" width="170" alt="Terminal running a remote shell" /></td>
-    <td><img src="resource/screenshots/side-menu-multi-sessions-multi-instances.png" width="170" alt="Side menu with multiple tmux sessions" /></td>
-    <td><img src="resource/screenshots/keyboard-with-extra-keys.png" width="170" alt="Keyboard with the extra keys row" /></td>
-    <td><img src="resource/screenshots/keyboard-with-function-keys.png" width="170" alt="Keyboard with the function keys row" /></td>
-    <td><img src="resource/screenshots/select-text-functionality.png" width="170" alt="Selecting text in the terminal" /></td>
+    <td><img src="resource/screenshots/add-new-instance.png" width="200" alt="Form for adding a new server" /></td>
+    <td><img src="resource/screenshots/terminal-screen.png" width="200" alt="Terminal running a remote shell" /></td>
+    <td><img src="resource/screenshots/side-menu-multi-sessions-multi-instances.png" width="200" alt="Side menu with multiple tmux sessions" /></td>
   </tr>
   <tr>
+    <td align="center"><sub>Add server</sub></td>
     <td align="center"><sub>Terminal</sub></td>
     <td align="center"><sub>tmux sessions</sub></td>
+  </tr>
+  <tr>
+    <td><img src="resource/screenshots/keyboard-with-extra-keys.png" width="200" alt="Keyboard with the extra keys row" /></td>
+    <td><img src="resource/screenshots/keyboard-with-function-keys.png" width="200" alt="Keyboard with the function keys row" /></td>
+    <td><img src="resource/screenshots/select-text-functionality.png" width="200" alt="Selecting text in the terminal" /></td>
+  </tr>
+  <tr>
     <td align="center"><sub>Extra keys row</sub></td>
     <td align="center"><sub>Function keys row</sub></td>
     <td align="center"><sub>Text selection</sub></td>
