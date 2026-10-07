@@ -78,6 +78,7 @@ Done:
 Planned:
 
 - [ ] Typing `exit` in a detached terminal session should close the terminal screen and go back to the server screen — currently the session just restarts; it should stay disconnected.
+- [ ] Biometric lock for the app at startup (fingerprint / face unlock)
 
 ## Download & install
 
