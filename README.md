@@ -74,11 +74,11 @@ Done:
 - [x] Terminal text selection, with optional selection-follows-finger
 - [x] Landscape terminal layout
 - [x] Clean disconnect from the terminal's close action
+- [x] Biometric lock for the app at startup (fingerprint / face unlock), off by default with a Settings → Security toggle
 
 Planned:
 
 - [ ] Typing `exit` in a detached terminal session should close the terminal screen and go back to the server screen — currently the session just restarts; it should stay disconnected.
-- [ ] Biometric lock for the app at startup (fingerprint / face unlock)
 
 ## Download & install
 

@@ -9,6 +9,8 @@ import { PaperProvider } from 'react-native-paper';
 
 import { useAppFonts } from '@/app-boot/use-app-fonts';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { BiometricLockGate } from '@/components/biometric-lock-gate';
+import { SecurityPreferenceProvider } from '@/components/security-preference-context';
 import { TerminalPreferenceProvider } from '@/components/terminal-preference-context';
 import { ThemePreferenceProvider, useThemePreference } from '@/components/theme/theme-context';
 import { deviceKeyService } from '@/services/connection/device-key';
@@ -26,12 +28,14 @@ const ThemedAppRoot = (): JSX.Element => {
     <PaperProvider theme={md3Theme}>
       <ThemeProvider value={navigationTheme}>
         <AnimatedSplashOverlay />
-        <Stack>
-          <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="connect" options={{ title: 'Instance' }} />
-          <Stack.Screen name="settings" options={{ headerShown: false }} />
-          <Stack.Screen name="about" options={{ headerShown: false }} />
-        </Stack>
+        <BiometricLockGate>
+          <Stack>
+            <Stack.Screen name="index" options={{ headerShown: false }} />
+            <Stack.Screen name="connect" options={{ title: 'Instance' }} />
+            <Stack.Screen name="settings" options={{ headerShown: false }} />
+            <Stack.Screen name="about" options={{ headerShown: false }} />
+          </Stack>
+        </BiometricLockGate>
       </ThemeProvider>
     </PaperProvider>
   );
@@ -54,7 +58,9 @@ export default function RootLayout() {
     <KeyboardProvider>
       <ThemePreferenceProvider>
         <TerminalPreferenceProvider>
-          <ThemedAppRoot />
+          <SecurityPreferenceProvider>
+            <ThemedAppRoot />
+          </SecurityPreferenceProvider>
         </TerminalPreferenceProvider>
       </ThemePreferenceProvider>
     </KeyboardProvider>

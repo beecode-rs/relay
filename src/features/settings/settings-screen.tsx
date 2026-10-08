@@ -6,18 +6,23 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppTopBar } from '@/components/app-top-bar';
 import { ScrollableTabBar, type ScrollableTabBarTab } from '@/components/scrollable-tab-bar';
 import { useThemePreference } from '@/components/theme/theme-context';
+import { SecuritySettingsTab } from '@/features/settings/security-settings-tab';
 import { SshKeySettingsTab } from '@/features/settings/ssh-key-settings-tab';
 import { SystemSettingsTab } from '@/features/settings/system-settings-tab';
 
-type SettingsTabKey = 'sshKey' | 'system';
+type SettingsTabKey = 'security' | 'sshKey' | 'system';
 
 const SETTINGS_TABS: readonly ScrollableTabBarTab<SettingsTabKey>[] = [
   { key: 'system', label: 'System' },
   { key: 'sshKey', label: 'SSH Key' },
+  { key: 'security', label: 'Security' },
 ];
 
 const renderActiveTab = (tabKey: SettingsTabKey): JSX.Element => {
   switch (tabKey) {
+    case 'security': {
+      return <SecuritySettingsTab />;
+    }
     case 'sshKey': {
       return <SshKeySettingsTab />;
     }
