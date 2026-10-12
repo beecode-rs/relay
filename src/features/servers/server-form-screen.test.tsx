@@ -165,6 +165,9 @@ const createTestClientFactory = () => {
 
         return { exitCode: 0, stderr: '', stdout: '' };
       },
+      async detectLoginShell() {
+        return 'unknown';
+      },
       async runInLoginShell() {},
       async readDir(params) {
         this.readDirCalls.push({ path: params.path });

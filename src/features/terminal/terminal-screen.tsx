@@ -41,6 +41,7 @@ import type { ServerProfile } from '@/services/connection/server-profile';
 import { serverProfileStore } from '@/services/connection/server-profile-store';
 import { activeServerStore as defaultActiveServerStore } from '@/services/connection/active-server-store';
 import type { ActiveServerStore } from '@/services/connection/active-server-store';
+import { shellHistoryUtil } from '@/services/ssh/shell-history-util';
 import { terminalSessionRegistry } from '@/services/terminal/terminal-session-registry';
 import type {
   TerminalSession,
@@ -652,7 +653,7 @@ export function TerminalScreen({
             setFollowRequestCount((count) => {
               return count + 1;
             });
-            activeSession?.write(`${installCommand}\r`);
+            activeSession?.write(`${shellHistoryUtil.toHistorySafeLine({ line: installCommand })}\r`);
             dismiss();
           },
           text: 'Install',

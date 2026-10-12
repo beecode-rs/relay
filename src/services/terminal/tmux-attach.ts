@@ -29,15 +29,15 @@ export const tmuxAttachUtil = {
     return `${constant.tmux.pathPrelude} tmux attach-session -t ${target}`;
   },
 
-  toCreateSessionCommand(params: { sessionName: string; startPath?: string }): string {
-    const target = tmuxAttachUtil._toShellWord(params.sessionName);
-    const startDirClause = tmuxAttachUtil._toStartDirClause(params.startPath);
+  toCreateSessionScript(params: { sessionName: string; startPath?: string }): string {
+    const target = tmuxAttachUtil._toShellWordForShC(params.sessionName);
+    const startDirClause = tmuxAttachUtil._toStartDirClauseForShC(params.startPath);
 
-    return `${constant.tmux.pathPrelude} tmux new-session -d -s ${target}${startDirClause}`;
+    return tmuxAttachUtil._toExecScript(`tmux new-session -d -s ${target}${startDirClause}`);
   },
 
   toFocusScript(params: { sessionName: string }): string {
-    const name = tmuxAttachUtil._toShellWord(params.sessionName);
+    const name = tmuxAttachUtil._toShellWordForShC(params.sessionName);
 
     return `relay_tmux_name=${name} ${tmuxAttachUtil._toClientScript({
       attachedCommand: `tmux switch-client -c "$relay_tmux_tty" -t "$relay_tmux_name" >/dev/null 2>&1 && echo ${FOCUS_SWITCHED_MARKER}`,
@@ -98,17 +98,17 @@ export const tmuxAttachUtil = {
     return { kind: 'none' };
   },
 
-  toKillSessionCommand(params: { sessionName: string }): string {
-    const target = tmuxAttachUtil._toShellWord(params.sessionName);
+  toKillSessionScript(params: { sessionName: string }): string {
+    const target = tmuxAttachUtil._toShellWordForShC(params.sessionName);
 
-    return `${constant.tmux.pathPrelude} tmux kill-session -t ${target}`;
+    return tmuxAttachUtil._toExecScript(`tmux kill-session -t ${target}`);
   },
 
-  toRenameSessionCommand(params: { nextSessionName: string; sessionName: string }): string {
-    const target = tmuxAttachUtil._toShellWord(params.sessionName);
-    const nextName = tmuxAttachUtil._toShellWord(params.nextSessionName);
+  toRenameSessionScript(params: { nextSessionName: string; sessionName: string }): string {
+    const target = tmuxAttachUtil._toShellWordForShC(params.sessionName);
+    const nextName = tmuxAttachUtil._toShellWordForShC(params.nextSessionName);
 
-    return `${constant.tmux.pathPrelude} tmux rename-session -t ${target} ${nextName}`;
+    return tmuxAttachUtil._toExecScript(`tmux rename-session -t ${target} ${nextName}`);
   },
 
   toNextSessionName(params: { sessionNames: string[] }): string {
@@ -183,6 +183,13 @@ export const tmuxAttachUtil = {
     return `'${value.replaceAll("'", "'\\''")}'`;
   },
 
+  // _toShellWord may emit single quotes, which would end the sh -c '...'
+  // wrapper early; re-close, escape, and reopen them so the inner shell still
+  // sees the quoted word after the outer shell strips the wrapper quotes.
+  _toShellWordForShC(value: string): string {
+    return tmuxAttachUtil._toShellWord(value).replaceAll("'", "'\\''");
+  },
+
   _toStartDirClause(startPath: string | undefined): string {
     const trimmedPath = startPath?.trim();
     if (trimmedPath === undefined || trimmedPath === '') {
@@ -190,5 +197,18 @@ export const tmuxAttachUtil = {
     }
 
     return ` -c ${tmuxAttachUtil._toShellWord(trimmedPath)}`;
+  },
+
+  _toStartDirClauseForShC(startPath: string | undefined): string {
+    const trimmedPath = startPath?.trim();
+    if (trimmedPath === undefined || trimmedPath === '') {
+      return '';
+    }
+
+    return ` -c ${tmuxAttachUtil._toShellWordForShC(trimmedPath)}`;
+  },
+
+  _toExecScript(body: string): string {
+    return `sh -c '${constant.tmux.pathPrelude} ${body}'`;
   },
 };

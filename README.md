@@ -134,6 +134,7 @@ The README covers using the app. To work on it:
 
 - [Development setup](resource/docs/development.md) — prerequisites, daily commands, quality gates
 - [Architecture](resource/docs/architecture.md) — how the source is layered
+- [Command history](resource/docs/command-history.md) — how Relay keeps its own commands out of shell history
 - [Releasing](resource/docs/releasing.md) — tag-driven releases
 
 ## License

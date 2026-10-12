@@ -154,4 +154,16 @@ describe('createMockSshBridge', () => {
     await bridge.runInLoginShell('tmux list-sessions');
     expect(bridge.loginShellCalls).toEqual(['tmux list-sessions']);
   });
+
+  it('returns queued detected shells and defaults to unknown without touching the exec queue', async () => {
+    const bridge = createMockSshBridge();
+    bridge.queueDetectedShell('zsh');
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'untouched' });
+
+    await expect(bridge.detectLoginShell()).resolves.toBe('zsh');
+    await expect(bridge.detectLoginShell()).resolves.toBe('unknown');
+    expect(bridge.detectLoginShellCalls).toEqual(['zsh', 'unknown']);
+    expect(bridge.execCalls).toEqual([]);
+    await expect(bridge.exec('probe')).resolves.toEqual({ exitCode: 0, stderr: '', stdout: 'untouched' });
+  });
 });

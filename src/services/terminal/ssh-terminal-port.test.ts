@@ -3,6 +3,7 @@ import { sshTerminalPort } from '@/services/terminal/ssh-terminal-port';
 describe('sshTerminalPort', () => {
   it('exposes the ssh2 shell client surface', () => {
     expect(typeof sshTerminalPort.connect).toBe('function');
+    expect(typeof sshTerminalPort.detectLoginShell).toBe('function');
     expect(typeof sshTerminalPort.exec).toBe('function');
     expect(typeof sshTerminalPort.runInLoginShell).toBe('function');
     expect(typeof sshTerminalPort.write).toBe('function');

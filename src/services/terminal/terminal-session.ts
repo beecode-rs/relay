@@ -1,4 +1,5 @@
 import { constant } from '@/constants/constant';
+import { shellHistoryUtil } from '@/services/ssh/shell-history-util';
 import { CursorModeTracker } from '@/services/terminal/cursor-mode-tracker';
 import { keySequences } from '@/services/terminal/key-sequences';
 import { OutputBatcher } from '@/services/terminal/output-batcher';
@@ -206,7 +207,7 @@ export class TerminalSession {
     ];
     try {
       await this.port.connect({ ...profile, cols: this.size.cols, rows: this.size.rows });
-      this.tmuxAutoAttach = this.checkTmux();
+      this.tmuxAutoAttach = this.initializeTmuxAfterConnect();
       this.updateState({ status: 'connected' });
     } catch (error) {
       this.handleConnectFailure(error);
@@ -281,12 +282,12 @@ export class TerminalSession {
       return false;
     }
     try {
-      await this.port.runInLoginShell(tmuxAttachUtil.toKillSessionCommand({ sessionName: params.sessionName }));
+      const result = await this.port.exec(tmuxAttachUtil.toKillSessionScript({ sessionName: params.sessionName }));
       if (seq !== this.tmuxCheckSeq || this.state.status !== 'connected') {
         return false;
       }
 
-      return true;
+      return result.exitCode === 0;
     } catch {
       return false;
     }
@@ -298,8 +299,8 @@ export class TerminalSession {
       return false;
     }
     try {
-      await this.port.runInLoginShell(
-        tmuxAttachUtil.toRenameSessionCommand({
+      const result = await this.port.exec(
+        tmuxAttachUtil.toRenameSessionScript({
           nextSessionName: params.nextSessionName,
           sessionName: params.sessionName,
         })
@@ -308,7 +309,7 @@ export class TerminalSession {
         return false;
       }
 
-      return true;
+      return result.exitCode === 0;
     } catch {
       return false;
     }
@@ -320,12 +321,12 @@ export class TerminalSession {
       return false;
     }
     try {
-      await this.port.runInLoginShell(tmuxAttachUtil.toCreateSessionCommand(params));
+      const result = await this.port.exec(tmuxAttachUtil.toCreateSessionScript(params));
       if (seq !== this.tmuxCheckSeq || this.state.status !== 'connected') {
         return false;
       }
 
-      return true;
+      return result.exitCode === 0;
     } catch {
       return false;
     }
@@ -370,7 +371,8 @@ export class TerminalSession {
       }
       this.isTmuxAttached = true;
       if (outcome.kind === 'detached') {
-        this.write(`${tmuxAttachUtil.toAttachSessionCommand({ sessionName: params.sessionName })}\r`);
+        const attachCommand = tmuxAttachUtil.toAttachSessionCommand({ sessionName: params.sessionName });
+        this.write(`${shellHistoryUtil.toHistorySafeLine({ line: attachCommand })}\r`);
       }
 
       return true;
@@ -526,6 +528,27 @@ export class TerminalSession {
     this.updateState({ status: 'error', error: { code, message } });
   }
 
+  // The interactive shell must accept the enable line before the first
+  // internal typed line (the auto-attach) so that history skips every line
+  // after it; the detection probe runs on the exec channel, so it adds no
+  // history itself.
+  private async initializeTmuxAfterConnect(): Promise<void> {
+    const shell = await this.port.detectLoginShell();
+    const enableLine = shellHistoryUtil.toEnableLine({ shell });
+    if (enableLine !== null) {
+      await this.typeInternalLine(enableLine);
+    }
+    await this.checkTmux();
+  }
+
+  private async typeInternalLine(line: string): Promise<void> {
+    try {
+      await this.port.write(`${line}\r`);
+    } catch {
+      return;
+    }
+  }
+
   private async checkTmux(): Promise<void> {
     const seq = ++this.tmuxCheckSeq;
     try {
@@ -536,12 +559,11 @@ export class TerminalSession {
       const probe = tmuxCheckUtil.parse({ stdout: result.stdout });
       if (probe.tmuxStatus === 'present') {
         this.isTmuxAttached = true;
-        this.write(
-          `${tmuxAttachUtil.toCommand({
-            preferredSessionName: this.profile?.lastTmuxSessionName,
-            startPath: this.profile?.remotePath,
-          })}\r`
-        );
+        const attachCommand = tmuxAttachUtil.toCommand({
+          preferredSessionName: this.profile?.lastTmuxSessionName,
+          startPath: this.profile?.remotePath,
+        });
+        this.write(`${shellHistoryUtil.toHistorySafeLine({ line: attachCommand })}\r`);
         return;
       }
       if (probe.tmuxStatus !== 'missing') {

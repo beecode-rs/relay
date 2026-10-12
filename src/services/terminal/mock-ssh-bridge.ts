@@ -1,3 +1,4 @@
+import type { DetectedShellKind } from '@/services/ssh/shell-history-util';
 import type { SshTerminalPort } from '@/services/terminal/ssh-terminal-port';
 import type {
   SshBridgeErrorCode,
@@ -25,6 +26,7 @@ export type MockExecControls = {
 
 export type MockSshBridge = SshTerminalPort & {
   readonly connectCalls: SshConnectOptions[];
+  readonly detectLoginShellCalls: DetectedShellKind[];
   readonly execCalls: string[];
   readonly loginShellCalls: string[];
   readonly readDirCalls: { path: string }[];
@@ -32,6 +34,7 @@ export type MockSshBridge = SshTerminalPort & {
   readonly resizes: { cols: number; rows: number }[];
   readonly disconnectCount: number;
   deferNextExec(): MockExecControls;
+  queueDetectedShell(shell: DetectedShellKind): void;
   queueExecResult(result: SshExecResult | Error): void;
   queueReadDirEntries(entries: SshRemoteDirEntry[] | Error): void;
   failNextConnect(failure: MockConnectFailure): void;
@@ -46,6 +49,8 @@ export const createMockSshBridge = (): MockSshBridge => {
   const closedListeners = new Set<(event: SshBridgeEventClosed) => void>();
   const errorListeners = new Set<(event: SshBridgeEventError) => void>();
   const connectCalls: SshConnectOptions[] = [];
+  const detectedShellQueue: DetectedShellKind[] = [];
+  const detectLoginShellCalls: DetectedShellKind[] = [];
   const execCalls: string[] = [];
   const loginShellCalls: string[] = [];
   const readDirCalls: { path: string }[] = [];
@@ -96,6 +101,7 @@ export const createMockSshBridge = (): MockSshBridge => {
   return {
     isSupported: true,
     connectCalls,
+    detectLoginShellCalls,
     execCalls,
     loginShellCalls,
     readDirCalls,
@@ -111,6 +117,19 @@ export const createMockSshBridge = (): MockSshBridge => {
         state.nextFailure = null;
         throw toBridgeFailure(failure);
       }
+    },
+    // Deliberately does not record into execCalls or drain the exec queue:
+    // session tests assert exact exec sequences and queue probe results FIFO.
+    async detectLoginShell(): Promise<DetectedShellKind> {
+      const queued = detectedShellQueue.shift();
+      if (queued === undefined) {
+        detectLoginShellCalls.push('unknown');
+
+        return 'unknown';
+      }
+      detectLoginShellCalls.push(queued);
+
+      return queued;
     },
     async exec(command: string): Promise<SshExecResult> {
       execCalls.push(command);
@@ -184,6 +203,9 @@ export const createMockSshBridge = (): MockSshBridge => {
       );
 
       return deferred;
+    },
+    queueDetectedShell(shell: DetectedShellKind): void {
+      detectedShellQueue.push(shell);
     },
     queueExecResult(result: SshExecResult | Error): void {
       execQueue.push(result);

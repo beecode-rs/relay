@@ -1,4 +1,5 @@
 import { Ssh2ShellClient } from '@/services/ssh/ssh2-shell-client';
+import type { DetectedShellKind } from '@/services/ssh/shell-history-util';
 import type {
   SshBridgeEventName,
   SshBridgeEventSubscription,
@@ -13,6 +14,7 @@ export type SshTerminalEventSubscription = SshBridgeEventSubscription;
 export type SshTerminalPort = {
   readonly isSupported: boolean;
   connect(options: SshConnectOptions): Promise<void>;
+  detectLoginShell(): Promise<DetectedShellKind>;
   exec(command: string): Promise<SshExecResult>;
   runInLoginShell(command: string): Promise<void>;
   readDir(params: { path: string }): Promise<SshRemoteDirEntry[]>;

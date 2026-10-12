@@ -4,6 +4,8 @@ import { Client, type ClientChannel, type ConnectConfig, type FileEntryWithStats
 import { constant } from '@/constants/constant';
 import { ssh2Debug } from '@/lib/ssh2-debug';
 import { hostKeyLineUtil } from '@/services/ssh/host-key-line';
+import { shellHistoryUtil } from '@/services/ssh/shell-history-util';
+import type { DetectedShellKind } from '@/services/ssh/shell-history-util';
 import type {
   SshBridgeError,
   SshBridgeErrorCode,
@@ -46,6 +48,7 @@ export class Ssh2ShellClientBase {
   protected readonly _errorListeners = new Set<(event: SshBridgeEventError) => void>();
   protected _channel: ClientChannel | null = null;
   protected _client: Client | null = null;
+  protected _detectedShellPromise: Promise<DetectedShellKind> | null = null;
   protected _hostKeyRejection: HostKeyRejection | null = null;
   protected _phase: ClientPhase = 'idle';
   protected _sftpSessionPromise: Promise<SFTPWrapper> | null = null;
@@ -89,11 +92,34 @@ export class Ssh2ShellClientBase {
     return this._execOnClient({ client: this._client, command });
   }
 
+  // Best-effort detection for the history-skip mechanism: a failed probe
+  // resolves 'unknown' (space-prefixed lines only, no enable line) and clears
+  // the memo so a later call can retry.
+  async detectLoginShell(): Promise<DetectedShellKind> {
+    if (this._detectedShellPromise !== null) {
+      return this._detectedShellPromise;
+    }
+    const client = this._client;
+    if (client === null) {
+      return 'unknown';
+    }
+    const detectedShellPromise = this._detectLoginShellOnClient({ client });
+    this._detectedShellPromise = detectedShellPromise;
+
+    return detectedShellPromise;
+  }
+
   async runInLoginShell(command: string): Promise<void> {
-    if (this._client === null) {
+    const client = this._client;
+    if (client === null) {
       throw new Error('SSH connection is not established');
     }
-    return this._runInLoginShellOnClient({ client: this._client, command });
+    const shell = await this.detectLoginShell();
+    if (this._client !== client) {
+      throw new Error('Connection attempt was cancelled');
+    }
+
+    return this._runInLoginShellOnClient({ client, command, shell });
   }
 
   async readDir(params: { path: string }): Promise<SshRemoteDirEntry[]> {
@@ -416,7 +442,31 @@ export class Ssh2ShellClientBase {
     });
   }
 
-  protected _runInLoginShellOnClient(params: { client: Client; command: string }): Promise<void> {
+  protected async _detectLoginShellOnClient(params: { client: Client }): Promise<DetectedShellKind> {
+    try {
+      const result = await this._execOnClient({ client: params.client, command: shellHistoryUtil.detectScript });
+
+      return shellHistoryUtil.parseDetectShell({ stdout: result.stdout });
+    } catch {
+      this._detectedShellPromise = null;
+
+      return 'unknown';
+    }
+  }
+
+  // Every call opens a fresh login shell, so the enable line is typed again
+  // each time and is itself recorded once per call - the mechanism's one
+  // accepted history trace; all other lines are space-prefixed and skipped.
+  protected _runInLoginShellOnClient(params: {
+    client: Client;
+    command: string;
+    shell: DetectedShellKind;
+  }): Promise<void> {
+    const typedLines = shellHistoryUtil.toHistorySafeLines({
+      lines: [params.command, LOGIN_SHELL_DONE_ECHO, 'exit'],
+      shell: params.shell,
+    });
+
     return new Promise<void>((resolve, reject) => {
       const outputDecoder = new TextDecoder();
       const run = {
@@ -484,7 +534,7 @@ export class Ssh2ShellClientBase {
             resolve();
           });
         });
-        shellChannel.write(`${params.command}\r${LOGIN_SHELL_DONE_ECHO}\rexit\r`, (writeError) => {
+        shellChannel.write(`${typedLines.join('\r')}\r`, (writeError) => {
           if (writeError) {
             settleOnce(() => {
               reject(writeError);
@@ -563,6 +613,7 @@ export class Ssh2ShellClientBase {
     this._client = null;
     this._channel = null;
     this._phase = 'idle';
+    this._detectedShellPromise = null;
     this._sftpSessionPromise = null;
     if (channel !== null && !channel.closed) {
       channel.close();

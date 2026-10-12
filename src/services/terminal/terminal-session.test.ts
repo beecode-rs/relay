@@ -295,6 +295,7 @@ describe('TerminalSession tmux check', () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\npm=apt-get\nuid=1000\n' });
     await session.start(profile);
+    await waitForEmulatorWrites();
     expect(bridge.execCalls).toEqual([tmuxCheckUtil.probeScript]);
     expect(session.currentState).toEqual({
       status: 'connected',
@@ -306,6 +307,7 @@ describe('TerminalSession tmux check', () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\npm=apk\nuid=0\n' });
     await session.start(profile);
+    await waitForEmulatorWrites();
     expect(session.currentState.tmuxPrompt).toEqual({ installCommand: 'apk add tmux' });
   });
 
@@ -318,7 +320,7 @@ describe('TerminalSession tmux check', () => {
     });
     await session.start(profile);
     await waitForEmulatorWrites();
-    expect(bridge.written).toEqual([`${tmuxAttachUtil.toCommand({})}\r`]);
+    expect(bridge.written).toEqual([` ${tmuxAttachUtil.toCommand({})}\r`]);
     expect(session.currentState).toEqual({ status: 'connected' });
   });
 
@@ -327,7 +329,7 @@ describe('TerminalSession tmux check', () => {
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\npm=apt-get\nuid=1000\n' });
     await session.start(profile);
     await waitForEmulatorWrites();
-    expect(bridge.written).toEqual([`${tmuxAttachUtil.toCommand({})}\r`]);
+    expect(bridge.written).toEqual([` ${tmuxAttachUtil.toCommand({})}\r`]);
     expect(session.currentState).toEqual({ status: 'connected' });
   });
 
@@ -336,7 +338,7 @@ describe('TerminalSession tmux check', () => {
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\npm=apt-get\nuid=1000\n' });
     await session.start({ ...profile, remotePath: '/srv/app' });
     await waitForEmulatorWrites();
-    expect(bridge.written).toEqual([`${tmuxAttachUtil.toCommand({ startPath: '/srv/app' })}\r`]);
+    expect(bridge.written).toEqual([` ${tmuxAttachUtil.toCommand({ startPath: '/srv/app' })}\r`]);
   });
 
   it('writes the attach command preferring the remembered session', async () => {
@@ -344,7 +346,17 @@ describe('TerminalSession tmux check', () => {
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\npm=apt-get\nuid=1000\n' });
     await session.start({ ...profile, lastTmuxSessionName: 'work' });
     await waitForEmulatorWrites();
-    expect(bridge.written).toEqual([`${tmuxAttachUtil.toCommand({ preferredSessionName: 'work' })}\r`]);
+    expect(bridge.written).toEqual([` ${tmuxAttachUtil.toCommand({ preferredSessionName: 'work' })}\r`]);
+  });
+
+  it('types the zsh history enable line before the attach command', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueDetectedShell('zsh');
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\npm=apt-get\nuid=1000\n' });
+    await session.start(profile);
+    await waitForEmulatorWrites();
+    expect(bridge.written).toEqual([' setopt HIST_IGNORE_SPACE\r', ` ${tmuxAttachUtil.toCommand({})}\r`]);
+    expect(bridge.detectLoginShellCalls).toEqual(['zsh']);
   });
 
   it('still attaches when the session list refresh races the in-flight probe', async () => {
@@ -356,7 +368,7 @@ describe('TerminalSession tmux check', () => {
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'rc=0\nts=work\ncs=work\n' });
     const result = await listPromise;
     await waitForEmulatorWrites();
-    expect(bridge.written).toEqual([`${tmuxAttachUtil.toCommand({})}\r`]);
+    expect(bridge.written).toEqual([` ${tmuxAttachUtil.toCommand({})}\r`]);
     expect(result).toEqual({ kind: 'sessions', currentSessionName: 'work', sessionNames: ['work'] });
   });
 
@@ -491,7 +503,7 @@ describe('TerminalSession tmux check', () => {
 });
 
 describe('TerminalSession.killTmuxSession', () => {
-  it('kills the session in a login shell', async () => {
+  it('kills the session over the exec channel', async () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
     await session.start(profile);
@@ -499,7 +511,8 @@ describe('TerminalSession.killTmuxSession', () => {
     const wasKilled = await session.killTmuxSession({ sessionName: 'work' });
 
     expect(wasKilled).toBe(true);
-    expect(bridge.loginShellCalls).toEqual([tmuxAttachUtil.toKillSessionCommand({ sessionName: 'work' })]);
+    expect(bridge.execCalls).toContain(tmuxAttachUtil.toKillSessionScript({ sessionName: 'work' }));
+    expect(bridge.loginShellCalls).toEqual([]);
   });
 
   it('returns false while not connected', async () => {
@@ -508,14 +521,26 @@ describe('TerminalSession.killTmuxSession', () => {
     const wasKilled = await session.killTmuxSession({ sessionName: 'work' });
 
     expect(wasKilled).toBe(false);
+    expect(bridge.execCalls).toEqual([]);
     expect(bridge.loginShellCalls).toEqual([]);
   });
 
-  it('returns false when the login shell fails', async () => {
+  it('returns false when the exec channel fails', async () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
     await session.start(profile);
-    bridge.failNextLoginShell(new Error('login shell timed out'));
+    bridge.queueExecResult(new Error('exec channel refused'));
+
+    const wasKilled = await session.killTmuxSession({ sessionName: 'work' });
+
+    expect(wasKilled).toBe(false);
+  });
+
+  it('returns false when tmux rejects the kill', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
+    await session.start(profile);
+    bridge.queueExecResult({ exitCode: 1, stderr: 'no such session', stdout: '' });
 
     const wasKilled = await session.killTmuxSession({ sessionName: 'work' });
 
@@ -524,7 +549,7 @@ describe('TerminalSession.killTmuxSession', () => {
 });
 
 describe('TerminalSession.renameTmuxSession', () => {
-  it('renames the session in a login shell', async () => {
+  it('renames the session over the exec channel', async () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
     await session.start(profile);
@@ -532,9 +557,10 @@ describe('TerminalSession.renameTmuxSession', () => {
     const wasRenamed = await session.renameTmuxSession({ nextSessionName: 'play', sessionName: 'work' });
 
     expect(wasRenamed).toBe(true);
-    expect(bridge.loginShellCalls).toEqual([
-      tmuxAttachUtil.toRenameSessionCommand({ nextSessionName: 'play', sessionName: 'work' }),
-    ]);
+    expect(bridge.execCalls).toContain(
+      tmuxAttachUtil.toRenameSessionScript({ nextSessionName: 'play', sessionName: 'work' })
+    );
+    expect(bridge.loginShellCalls).toEqual([]);
   });
 
   it('returns false while not connected', async () => {
@@ -543,14 +569,15 @@ describe('TerminalSession.renameTmuxSession', () => {
     const wasRenamed = await session.renameTmuxSession({ nextSessionName: 'play', sessionName: 'work' });
 
     expect(wasRenamed).toBe(false);
+    expect(bridge.execCalls).toEqual([]);
     expect(bridge.loginShellCalls).toEqual([]);
   });
 
-  it('returns false when the login shell fails', async () => {
+  it('returns false when the exec channel fails', async () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
     await session.start(profile);
-    bridge.failNextLoginShell(new Error('login shell timed out'));
+    bridge.queueExecResult(new Error('exec channel refused'));
 
     const wasRenamed = await session.renameTmuxSession({ nextSessionName: 'play', sessionName: 'work' });
 
@@ -559,7 +586,7 @@ describe('TerminalSession.renameTmuxSession', () => {
 });
 
 describe('TerminalSession.createTmuxSession', () => {
-  it('creates the session in a login shell', async () => {
+  it('creates the session over the exec channel', async () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
     await session.start(profile);
@@ -567,9 +594,10 @@ describe('TerminalSession.createTmuxSession', () => {
     const wasCreated = await session.createTmuxSession({ sessionName: 'work', startPath: '/srv/app' });
 
     expect(wasCreated).toBe(true);
-    expect(bridge.loginShellCalls).toEqual([
-      tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work', startPath: '/srv/app' }),
-    ]);
+    expect(bridge.execCalls).toContain(
+      tmuxAttachUtil.toCreateSessionScript({ sessionName: 'work', startPath: '/srv/app' })
+    );
+    expect(bridge.loginShellCalls).toEqual([]);
   });
 
   it('returns false while not connected', async () => {
@@ -578,14 +606,15 @@ describe('TerminalSession.createTmuxSession', () => {
     const wasCreated = await session.createTmuxSession({ sessionName: 'work' });
 
     expect(wasCreated).toBe(false);
+    expect(bridge.execCalls).toEqual([]);
     expect(bridge.loginShellCalls).toEqual([]);
   });
 
-  it('returns false when the login shell fails', async () => {
+  it('returns false when the exec channel fails', async () => {
     const { bridge, session } = createHarness();
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
     await session.start(profile);
-    bridge.failNextLoginShell(new Error('login shell timed out'));
+    bridge.queueExecResult(new Error('exec channel refused'));
 
     const wasCreated = await session.createTmuxSession({ sessionName: 'work' });
 
@@ -604,9 +633,10 @@ describe('TerminalSession.cloneTmuxSession', () => {
 
     expect(wasCloned).toBe(true);
     expect(bridge.execCalls).toContain(tmuxAttachUtil.toSessionPathScript({ sessionName: 'work' }));
-    expect(bridge.loginShellCalls).toContain(
-      tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work-copy', startPath: '/srv/app' })
+    expect(bridge.execCalls).toContain(
+      tmuxAttachUtil.toCreateSessionScript({ sessionName: 'work-copy', startPath: '/srv/app' })
     );
+    expect(bridge.loginShellCalls).toEqual([]);
   });
 
   it('creates the clone without a path when the source path cannot be read', async () => {
@@ -618,9 +648,8 @@ describe('TerminalSession.cloneTmuxSession', () => {
     const wasCloned = await session.cloneTmuxSession({ nextSessionName: 'work-copy', sessionName: 'work' });
 
     expect(wasCloned).toBe(true);
-    expect(bridge.loginShellCalls).toContain(
-      tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work-copy' })
-    );
+    expect(bridge.execCalls).toContain(tmuxAttachUtil.toCreateSessionScript({ sessionName: 'work-copy' }));
+    expect(bridge.loginShellCalls).toEqual([]);
   });
 
   it('returns false while not connected', async () => {
@@ -670,7 +699,7 @@ describe('TerminalSession.focusTmuxSession', () => {
 
     expect(wasFocused).toBe(true);
     expect(bridge.written.slice(writtenAfterStart)).toEqual([
-      `${tmuxAttachUtil.toAttachSessionCommand({ sessionName: 'work' })}\r`,
+      ` ${tmuxAttachUtil.toAttachSessionCommand({ sessionName: 'work' })}\r`,
     ]);
   });
 

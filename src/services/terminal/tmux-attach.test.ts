@@ -119,35 +119,37 @@ describe('tmuxAttachUtil.toAttachSessionCommand', () => {
   });
 });
 
-describe('tmuxAttachUtil.toCreateSessionCommand', () => {
-  it('creates the session detached', () => {
-    const command = tmuxAttachUtil.toCreateSessionCommand({ sessionName: 's02' });
+describe('tmuxAttachUtil.toCreateSessionScript', () => {
+  it('creates the session detached over the exec channel', () => {
+    const script = tmuxAttachUtil.toCreateSessionScript({ sessionName: 's02' });
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux new-session -d -s s02`);
+    expect(script).toBe(`sh -c '${constant.tmux.pathPrelude} tmux new-session -d -s s02'`);
   });
 
-  it('single quotes session names with shell unsafe characters', () => {
-    const command = tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'my session' });
+  it('re-escapes quoted session names so they survive the sh -c wrapper', () => {
+    const script = tmuxAttachUtil.toCreateSessionScript({ sessionName: 'my session' });
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux new-session -d -s 'my session'`);
+    expect(script).toBe(`sh -c '${constant.tmux.pathPrelude} tmux new-session -d -s '\\''my session'\\'''`);
   });
 
   it('starts the session in the given start path', () => {
-    const command = tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work', startPath: '/home/user' });
+    const script = tmuxAttachUtil.toCreateSessionScript({ sessionName: 'work', startPath: '/home/user' });
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux new-session -d -s work -c '/home/user'`);
+    expect(script).toBe(
+      `sh -c '${constant.tmux.pathPrelude} tmux new-session -d -s work -c '\\''/home/user'\\'''`
+    );
   });
 
-  it('single quotes start paths containing spaces', () => {
-    const command = tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work', startPath: '/opt/my app' });
+  it('re-escapes quoted start paths for the sh -c wrapper', () => {
+    const script = tmuxAttachUtil.toCreateSessionScript({ sessionName: 'work', startPath: '/opt/my app' });
 
-    expect(command).toContain("-c '/opt/my app'");
+    expect(script).toBe(`sh -c '${constant.tmux.pathPrelude} tmux new-session -d -s work -c '\\''/opt/my app'\\'''`);
   });
 
   it('omits the start directory without a start path', () => {
-    const command = tmuxAttachUtil.toCreateSessionCommand({ sessionName: 'work' });
+    const script = tmuxAttachUtil.toCreateSessionScript({ sessionName: 'work' });
 
-    expect(command).not.toContain(' -c ');
+    expect(script).not.toContain('tmux new-session -d -s work -c');
   });
 });
 
@@ -171,7 +173,7 @@ describe('tmuxAttachUtil.toFocusScript', () => {
   it('shell quotes an unsafe session name as an environment assignment', () => {
     const script = tmuxAttachUtil.toFocusScript({ sessionName: 'my session' });
 
-    expect(script).toContain("relay_tmux_name='my session'");
+    expect(script).toContain("relay_tmux_name='\\''my session'\\''");
   });
 
   it('resolves tmux through the shared PATH prelude so a user-installed tmux wins', () => {
@@ -201,34 +203,36 @@ describe('tmuxAttachUtil.toFocusOutcome', () => {
   });
 });
 
-describe('tmuxAttachUtil.toKillSessionCommand', () => {
-  it('kills the named session by target', () => {
-    const command = tmuxAttachUtil.toKillSessionCommand({ sessionName: 'work' });
+describe('tmuxAttachUtil.toKillSessionScript', () => {
+  it('kills the named session by target over the exec channel', () => {
+    const script = tmuxAttachUtil.toKillSessionScript({ sessionName: 'work' });
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux kill-session -t work`);
+    expect(script).toBe(`sh -c '${constant.tmux.pathPrelude} tmux kill-session -t work'`);
   });
 
-  it('single quotes session names with shell unsafe characters', () => {
-    const command = tmuxAttachUtil.toKillSessionCommand({ sessionName: 'my session' });
+  it('re-escapes quoted session names so they survive the sh -c wrapper', () => {
+    const script = tmuxAttachUtil.toKillSessionScript({ sessionName: 'my session' });
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux kill-session -t 'my session'`);
+    expect(script).toBe(`sh -c '${constant.tmux.pathPrelude} tmux kill-session -t '\\''my session'\\'''`);
   });
 });
 
-describe('tmuxAttachUtil.toRenameSessionCommand', () => {
-  it('renames the session by target', () => {
-    const command = tmuxAttachUtil.toRenameSessionCommand({ nextSessionName: 'play', sessionName: 'work' });
+describe('tmuxAttachUtil.toRenameSessionScript', () => {
+  it('renames the session by target over the exec channel', () => {
+    const script = tmuxAttachUtil.toRenameSessionScript({ nextSessionName: 'play', sessionName: 'work' });
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux rename-session -t work play`);
+    expect(script).toBe(`sh -c '${constant.tmux.pathPrelude} tmux rename-session -t work play'`);
   });
 
-  it('single quotes session names with shell unsafe characters', () => {
-    const command = tmuxAttachUtil.toRenameSessionCommand({
+  it('round-trips shell-quoted session names through the sh -c wrapper', () => {
+    const script = tmuxAttachUtil.toRenameSessionScript({
       nextSessionName: 'my session',
       sessionName: "bob's",
     });
+    const body = script.slice(script.indexOf("sh -c '") + "sh -c '".length, -1);
+    const innerScript = body.replaceAll("'\\''", "'");
 
-    expect(command).toBe(`${constant.tmux.pathPrelude} tmux rename-session -t 'bob'\\''s' 'my session'`);
+    expect(innerScript).toBe(`${constant.tmux.pathPrelude} tmux rename-session -t 'bob'\\''s' 'my session'`);
   });
 });
 

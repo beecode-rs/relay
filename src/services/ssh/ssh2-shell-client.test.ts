@@ -4,6 +4,7 @@ import { Buffer } from 'buffer';
 import type { Client, ClientChannel } from 'ssh2';
 
 import { Ssh2ShellClientBase } from '@/services/ssh/ssh2-shell-client-base';
+import type { DetectedShellKind } from '@/services/ssh/shell-history-util';
 import type { SshBridgeErrorCode, SshConnectOptions } from '@/services/terminal/ssh-terminal-types';
 
 class ExposedClient extends Ssh2ShellClientBase {
@@ -21,6 +22,10 @@ class ExposedClient extends Ssh2ShellClientBase {
 
   emitData(chunk: Buffer): void {
     this._emitData(chunk);
+  }
+
+  forceDetectedShell(shell: DetectedShellKind): void {
+    this._detectedShellPromise = Promise.resolve(shell);
   }
 
   forceExecTarget(client: Client): void {
@@ -84,6 +89,35 @@ const createImmediateShellClient = (channel: FakeShellChannel): Client => {
       callback(undefined, toClientChannel(channel));
     },
   } as unknown as Client;
+};
+
+const createImmediateExecAndShellClient = (params: {
+  execChannel: FakeExecChannel;
+  shellChannel: FakeShellChannel;
+}): Client => {
+  return {
+    end: () => {
+      return undefined;
+    },
+    exec: (_command: string, callback: (err: Error | undefined, execChannel: ClientChannel) => void) => {
+      callback(undefined, toClientChannel(params.execChannel));
+    },
+    shell: (
+      _options: unknown,
+      callback: (err: Error | undefined, shellChannel: ClientChannel) => void
+    ) => {
+      callback(undefined, toClientChannel(params.shellChannel));
+    },
+  } as unknown as Client;
+};
+
+// The login-shell payload is typed only after the detection await resolves,
+// and flushAsync must not depend on timers (tests run with fake timers).
+const flushAsync = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 };
 
 const CONNECT_OPTIONS = {
@@ -324,23 +358,61 @@ describe('Ssh2ShellClientBase.runInLoginShell', () => {
     await expect(client.runInLoginShell('tmux list-sessions')).rejects.toThrow('not established');
   });
 
-  it('writes the command with a sentinel echo and exit, then resolves on the sentinel', async () => {
+  it('writes the history-safe payload with the zsh enable line first, then resolves on the sentinel', async () => {
     const channel = new FakeShellChannel();
     const client = new ExposedClient();
     client.forceExecTarget(createImmediateShellClient(channel));
+    client.forceDetectedShell('zsh');
     const pending = client.runInLoginShell('tmux list-sessions');
+    await flushAsync();
 
-    expect(channel.writes).toEqual(['tmux list-sessions\recho __cmh_shell_"done"__\rexit\r']);
+    expect(channel.writes).toEqual([
+      ' setopt HIST_IGNORE_SPACE\r tmux list-sessions\r echo __cmh_shell_"done"__\r exit\r',
+    ]);
     channel.emit('data', Buffer.from('echo __cmh_shell_"done"__\r\n__cmh_shell_done__\r\n'));
     await expect(pending).resolves.toBeUndefined();
     expect(channel.closed).toBe(true);
+  });
+
+  it('space-prefixes the payload without an enable line for unknown shells', async () => {
+    const channel = new FakeShellChannel();
+    const client = new ExposedClient();
+    client.forceExecTarget(createImmediateShellClient(channel));
+    client.forceDetectedShell('unknown');
+    const pending = client.runInLoginShell('tmux list-sessions');
+    await flushAsync();
+
+    expect(channel.writes).toEqual([' tmux list-sessions\r echo __cmh_shell_"done"__\r exit\r']);
+    channel.emit('data', Buffer.from('__cmh_shell_done__\r\n'));
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it('detects the login shell through an exec probe before typing anything', async () => {
+    const shellChannel = new FakeShellChannel();
+    const execChannel = new FakeExecChannel();
+    const client = new ExposedClient();
+    client.forceExecTarget(
+      createImmediateExecAndShellClient({ execChannel, shellChannel: shellChannel })
+    );
+    const pending = client.runInLoginShell('tmux list-sessions');
+    execChannel.emit('data', Buffer.from('/bin/zsh'));
+    execChannel.close();
+    await flushAsync();
+
+    expect(shellChannel.writes).toEqual([
+      ' setopt HIST_IGNORE_SPACE\r tmux list-sessions\r echo __cmh_shell_"done"__\r exit\r',
+    ]);
+    shellChannel.emit('data', Buffer.from('__cmh_shell_done__\r\n'));
+    await expect(pending).resolves.toBeUndefined();
   });
 
   it('resolves once the shell closes even without seeing the sentinel', async () => {
     const channel = new FakeShellChannel();
     const client = new ExposedClient();
     client.forceExecTarget(createImmediateShellClient(channel));
+    client.forceDetectedShell('zsh');
     const pending = client.runInLoginShell('tmux list-sessions');
+    await flushAsync();
 
     channel.close();
     await expect(pending).resolves.toBeUndefined();
@@ -348,6 +420,7 @@ describe('Ssh2ShellClientBase.runInLoginShell', () => {
 
   it('rejects when the shell channel cannot be opened', async () => {
     const client = new ExposedClient();
+    client.forceDetectedShell('zsh');
     client.forceExecTarget({
       end: () => {
         return undefined;
@@ -368,8 +441,10 @@ describe('Ssh2ShellClientBase.runInLoginShell', () => {
     const channel = new FakeShellChannel();
     const client = new ExposedClient();
     client.forceExecTarget(createImmediateShellClient(channel));
+    client.forceDetectedShell('zsh');
     const pending = client.runInLoginShell('tmux list-sessions');
     const assertion = expect(pending).rejects.toThrow('timed out');
+    await flushAsync();
     jest.advanceTimersByTime(20001);
     await assertion;
     expect(channel.closed).toBe(true);
@@ -384,6 +459,7 @@ describe('Ssh2ShellClientBase.runInLoginShell', () => {
       closedReasons.push(event.reason);
     });
     client.forceExecTarget(createImmediateShellClient(channel));
+    client.forceDetectedShell('zsh');
     const pending = client.runInLoginShell('tmux list-sessions');
     client.disconnect();
     channel.close();

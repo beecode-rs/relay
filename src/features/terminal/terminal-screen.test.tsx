@@ -1002,7 +1002,7 @@ describe('TerminalScreen tmux install prompt', () => {
     await act(async () => {
       installButton?.onPress?.();
     });
-    expect(session.writes).toEqual(['sudo apt-get update && sudo apt-get install -y tmux\r']);
+    expect(session.writes).toEqual([' sudo apt-get update && sudo apt-get install -y tmux\r']);
     expect(session.dismissedTmuxPromptCount).toBe(1);
     alertSpy.mockRestore();
   });
