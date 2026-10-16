@@ -70,4 +70,12 @@ export const constant = {
       'relay_tmux_exe=$(readlink "/proc/$(pgrep -u "$(id -u)" -x "tmux: server" 2>/dev/null | head -n 1)/exe" 2>/dev/null); ' +
       'if [ -x "$relay_tmux_exe" ]; then PATH=$(dirname "$relay_tmux_exe"):$PATH; fi; export PATH;',
   },
+  update: {
+    apkAssetNameSuffix: '.apk',
+    github: {
+      latestReleaseApiUrl: 'https://api.github.com/repos/beecode-rs/relay/releases/latest',
+      rateLimitRemainingHeader: 'x-ratelimit-remaining',
+      rateLimitResetHeader: 'x-ratelimit-reset',
+    },
+  },
 } as const;

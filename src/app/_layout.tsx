@@ -13,6 +13,7 @@ import { BiometricLockGate } from '@/components/biometric-lock-gate';
 import { SecurityPreferenceProvider } from '@/components/security-preference-context';
 import { TerminalPreferenceProvider } from '@/components/terminal-preference-context';
 import { ThemePreferenceProvider, useThemePreference } from '@/components/theme/theme-context';
+import { UpdateCheckProvider } from '@/components/update-check-context';
 import { deviceKeyService } from '@/services/connection/device-key';
 
 SplashScreen.preventAutoHideAsync();
@@ -59,7 +60,9 @@ export default function RootLayout() {
       <ThemePreferenceProvider>
         <TerminalPreferenceProvider>
           <SecurityPreferenceProvider>
-            <ThemedAppRoot />
+            <UpdateCheckProvider>
+              <ThemedAppRoot />
+            </UpdateCheckProvider>
           </SecurityPreferenceProvider>
         </TerminalPreferenceProvider>
       </ThemePreferenceProvider>

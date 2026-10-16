@@ -6,6 +6,7 @@ import { SettingsRow } from '@/features/settings/settings-row';
 import { SettingsSection } from '@/features/settings/settings-section';
 import { TerminalFontSizeMenu } from '@/features/settings/terminal-font-size-menu';
 import { ThemeSchemeMenu } from '@/features/settings/theme-scheme-menu';
+import { UpdateSettingsSection } from '@/features/settings/update-settings-section';
 
 export const SystemSettingsTab = (): JSX.Element => {
   const { preference, savePreference } = useTerminalPreference();
@@ -33,6 +34,7 @@ export const SystemSettingsTab = (): JSX.Element => {
           label="Selection follows finger"
         />
       </SettingsSection>
+      <UpdateSettingsSection />
     </>
   );
 };

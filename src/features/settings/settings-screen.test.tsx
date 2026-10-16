@@ -6,6 +6,7 @@ import { PaperProvider } from 'react-native-paper';
 import { SecurityPreferenceProvider } from '@/components/security-preference-context';
 import { TerminalPreferenceProvider } from '@/components/terminal-preference-context';
 import { ThemePreferenceProvider } from '@/components/theme/theme-context';
+import { UpdateCheckProvider } from '@/components/update-check-context';
 import { SettingsScreen } from '@/features/settings/settings-screen';
 import { biometricAuthService } from '@/services/security/biometric-auth-service';
 import type { SecurityPreferenceStorage } from '@/services/security/security-preference';
@@ -16,6 +17,16 @@ import type { ThemePreferenceStorage } from '@/services/theme/theme-preference';
 jest.mock('expo-router', () => {
   return {
     router: { back: jest.fn(), navigate: jest.fn(), push: jest.fn() },
+  };
+});
+
+jest.mock('@/services/update/app-update-service', () => {
+  return {
+    appUpdateService: {
+      fetchLatestRelease: jest.fn().mockResolvedValue({ error: null, release: null }),
+      resolveDownloadUrl: jest.fn(),
+      resolveUpdate: jest.fn().mockReturnValue(undefined),
+    },
   };
 });
 
@@ -115,11 +126,13 @@ const renderScreen = (
     <ThemePreferenceProvider storage={storage}>
       <TerminalPreferenceProvider storage={terminalStorage}>
         <SecurityPreferenceProvider storage={securityStorage}>
-          <PaperProvider>
-            <View>
-              <SettingsScreen />
-            </View>
-          </PaperProvider>
+          <UpdateCheckProvider>
+            <PaperProvider>
+              <View>
+                <SettingsScreen />
+              </View>
+            </PaperProvider>
+          </UpdateCheckProvider>
         </SecurityPreferenceProvider>
       </TerminalPreferenceProvider>
     </ThemePreferenceProvider>,
