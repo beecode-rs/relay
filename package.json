@@ -71,9 +71,9 @@
     "typecheck": "tsc --noEmit",
     "test": "EXPO_PUBLIC_USE_RN_FETCH=1 jest",
     "relay": "node ./scripts/ssh-web-relay.mjs",
-    "release:major": "node ./scripts/release.mjs major",
-    "release:minor": "node ./scripts/release.mjs minor",
-    "release:patch": "node ./scripts/release.mjs patch"
+    "release-major": "node ./scripts/release.mjs major",
+    "release-minor": "node ./scripts/release.mjs minor",
+    "release-patch": "node ./scripts/release.mjs patch"
   },
   "private": true,
   "packageManager": "pnpm@10.18.1",

@@ -5,7 +5,7 @@ How Relay's tag-driven release pipeline works. See the [README](../../README.md)
 Releases are tag-driven. From `main`:
 
 ```bash
-pnpm release:patch   # or release:minor / release:major
+pnpm release-patch   # or release-minor / release-major
 ```
 
 That bumps the version (`package.json` + `app.json`, including `android.versionCode` and `ios.buildNumber`), commits, tags `v<version>`, and pushes. GitHub Actions then runs the quality gate, builds the Android APK and the unsigned iOS IPA — failing if the tag does not match the version in `app.json` — and publishes both to the Releases page with auto-generated notes. The workflow can also be run manually from the Actions tab as a dry run: it builds both artifacts but skips the release step.
