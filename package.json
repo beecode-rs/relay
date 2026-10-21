@@ -59,11 +59,12 @@
     "ws": "^8.22.0"
   },
   "scripts": {
-    "android-release": "expo prebuild -p android --no-install && node scripts/patch-android-build.mjs && expo run:android --variant release",
-    "start": "APP_VARIANT=development expo start --dev-client",
+    "android-release": "APP_VARIANT=dev expo run:android --variant release",
+    "start": "APP_VARIANT=dev expo start --dev-client",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "APP_VARIANT=development expo prebuild -p android --no-install && node scripts/patch-android-build.mjs && expo run:android",
-    "android-rebuild": "APP_VARIANT=development expo prebuild -p android --clean && node scripts/patch-android-build.mjs && pnpm run android",
+    "android": "expo start --android --dev-client",
+    "android-install": "adb install -r android/app/build/outputs/apk/debug/app-debug.apk",
+    "android-rebuild": "APP_VARIANT=dev expo prebuild -p android --clean && node scripts/patch-android-build.mjs",
     "build:android-release": "flock -n -o /tmp/relay-android-release.lock sh -c 'expo prebuild -p android --clean --no-install && node scripts/patch-android-build.mjs && cd android && ./gradlew --no-build-cache assembleRelease' || { echo 'another android release build is already running — wait for it to finish'; exit 1; }",
     "ios": "APP_VARIANT=development expo prebuild -p ios && expo run:ios",
     "web": "expo start --web",

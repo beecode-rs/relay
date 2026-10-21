@@ -8,7 +8,7 @@ const fallbackAppName = 'Relay';
 const fallbackAppSlug = 'relay';
 
 const isDevelopmentBuild = (): boolean => {
-  return process.env.APP_VARIANT === 'development';
+  return process.env.APP_VARIANT === 'dev' || process.env.APP_VARIANT === 'development';
 };
 
 const toAppName = (params: { config: ConfigContext['config'] }): string => {
