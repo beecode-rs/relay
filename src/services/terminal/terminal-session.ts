@@ -81,6 +81,7 @@ export class TerminalSession {
   private connectionAttemptActive = false;
   private tmuxCheckSeq = 0;
   private tmuxAutoAttach: Promise<void> = Promise.resolve();
+  private shouldAttachTmux = true;
   private isTmuxAttached = false;
   private pendingTmuxScrollRows = 0;
   private isTmuxScrollFlushScheduled = false;
@@ -183,9 +184,15 @@ export class TerminalSession {
     };
   }
 
-  async start(profile: SshConnectOptions, size?: { cols: number; rows: number }): Promise<void> {
+  // shouldAttachTmux: false leaves the fresh shell raw (the instance view)
+  // instead of auto-attaching tmux right after connect.
+  async start(
+    profile: SshConnectOptions,
+    params: { shouldAttachTmux?: boolean; size?: { cols: number; rows: number } } = {}
+  ): Promise<void> {
     this.profile = profile;
-    this.size = size ?? this.size;
+    this.size = params.size ?? this.size;
+    this.shouldAttachTmux = params.shouldAttachTmux ?? true;
     this.teardownConnection();
     this.cursorTracker.reset();
     this.batcher.clear();
@@ -224,7 +231,7 @@ export class TerminalSession {
       acceptedHostKeys: mergeHostKeyLine(this.profile.acceptedHostKeys, pendingHostKey.hostKeyLine),
     };
     const profile = this.profile;
-    void this.start(profile);
+    void this.start(profile, { shouldAttachTmux: this.shouldAttachTmux });
   }
 
   rejectHostKey(): void {
@@ -356,6 +363,15 @@ export class TerminalSession {
     if (this.state.status !== 'connected') {
       return false;
     }
+    // The out-of-band switch targets the newest tmux client, which is only this
+    // shell while it is attached; a detached shell would instead switch some
+    // other client (a zombie from a dropped connection, another device), so it
+    // attaches in the shell itself.
+    if (!this.isTmuxAttached) {
+      this.attachTmuxSessionInShell({ sessionName: params.sessionName });
+
+      return true;
+    }
     try {
       const result = await this.port.exec(
         tmuxAttachUtil.toFocusScript({
@@ -369,10 +385,8 @@ export class TerminalSession {
       if (outcome.kind === 'unknown') {
         return false;
       }
-      this.isTmuxAttached = true;
       if (outcome.kind === 'detached') {
-        const attachCommand = tmuxAttachUtil.toAttachSessionCommand({ sessionName: params.sessionName });
-        this.write(`${shellHistoryUtil.toHistorySafeLine({ line: attachCommand })}\r`);
+        this.attachTmuxSessionInShell({ sessionName: params.sessionName });
       }
 
       return true;
@@ -384,6 +398,10 @@ export class TerminalSession {
   async detachTmuxSession(): Promise<boolean> {
     if (this.state.status !== 'connected') {
       return false;
+    }
+    // Nothing of this shell's to detach; the newest client belongs to someone else.
+    if (!this.isTmuxAttached) {
+      return true;
     }
     try {
       const result = await this.port.exec(tmuxAttachUtil.toDetachScript());
@@ -453,11 +471,17 @@ export class TerminalSession {
     return this.batcher.drain();
   }
 
+  private attachTmuxSessionInShell(params: { sessionName: string }): void {
+    this.isTmuxAttached = true;
+    const attachCommand = tmuxAttachUtil.toAttachSessionCommand({ sessionName: params.sessionName });
+    this.write(`${shellHistoryUtil.toHistorySafeLine({ line: attachCommand })}\r`);
+  }
+
   private toTmuxListResult(params: { outcome: TmuxListOutcome }): TmuxSessionListResult {
     if (params.outcome.kind === 'listed') {
       return {
         kind: 'sessions',
-        currentSessionName: params.outcome.currentSessionName,
+        currentSessionName: this.toOwnCurrentSessionName(params.outcome.currentSessionName),
         sessionNames: params.outcome.sessionNames,
       };
     }
@@ -472,6 +496,16 @@ export class TerminalSession {
       kind: 'error',
       message: 'Could not list tmux sessions: the login shell closed before the listing ran',
     };
+  }
+
+  // The listed current session is the newest client's; while this shell is
+  // detached that client is someone else's, so this shell has no current one.
+  private toOwnCurrentSessionName(newestClientSessionName: string | null): string | null {
+    if (!this.isTmuxAttached) {
+      return null;
+    }
+
+    return newestClientSessionName;
   }
 
   private updateState(state: TerminalSessionState): void {
@@ -557,6 +591,9 @@ export class TerminalSession {
         return;
       }
       const probe = tmuxCheckUtil.parse({ stdout: result.stdout });
+      if (probe.tmuxStatus === 'present' && !this.shouldAttachTmux) {
+        return;
+      }
       if (probe.tmuxStatus === 'present') {
         this.isTmuxAttached = true;
         const attachCommand = tmuxAttachUtil.toCommand({

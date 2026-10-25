@@ -54,6 +54,12 @@ const waitForEmulatorWrites = async (): Promise<void> => {
   });
 };
 
+const startWithTmuxAttached = async (harness: TestHarness): Promise<void> => {
+  harness.bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\nuid=1000\n' });
+  await harness.session.start(profile);
+  await waitForEmulatorWrites();
+};
+
 describe('TerminalSession.start', () => {
   it('moves through connecting to connected', async () => {
     const { session } = createHarness();
@@ -178,7 +184,7 @@ describe('TerminalSession.write and resize', () => {
 
   it('resizes both the emulator and the bridge while connected', async () => {
     const { bridge, getEmulator, session } = createHarness();
-    await session.start(profile, { cols: 80, rows: 24 });
+    await session.start(profile, { size: { cols: 80, rows: 24 } });
     session.resize({ cols: 120, rows: 40 });
     expect(getEmulator().cols).toBe(120);
     expect(getEmulator().rows).toBe(40);
@@ -187,7 +193,7 @@ describe('TerminalSession.write and resize', () => {
 
   it('resizes only the emulator while not connected', async () => {
     const { bridge, getEmulator, session } = createHarness();
-    await session.start(profile, { cols: 80, rows: 24 });
+    await session.start(profile, { size: { cols: 80, rows: 24 } });
     bridge.emitClosed('eof');
     session.resize({ cols: 100, rows: 30 });
     expect(getEmulator().cols).toBe(100);
@@ -196,7 +202,7 @@ describe('TerminalSession.write and resize', () => {
 
   it('keeps the last size when a reconnect passes no explicit size', async () => {
     const { bridge, getEmulator, session } = createHarness();
-    await session.start(profile, { cols: 80, rows: 24 });
+    await session.start(profile, { size: { cols: 80, rows: 24 } });
     session.resize({ cols: 110, rows: 35 });
     bridge.emitClosed('eof');
     await session.start(profile);
@@ -372,6 +378,34 @@ describe('TerminalSession tmux check', () => {
     expect(result).toEqual({ kind: 'sessions', currentSessionName: 'work', sessionNames: ['work'] });
   });
 
+  it('leaves the shell raw when started without the tmux auto-attach', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\npm=apt-get\nuid=1000\n' });
+    await session.start(profile, { shouldAttachTmux: false });
+    await waitForEmulatorWrites();
+    expect(bridge.written).toEqual([]);
+    expect(session.isRemoteScrollEnabled).toBe(false);
+  });
+
+  it('keeps skipping the auto-attach when a host key is accepted', async () => {
+    const { bridge, session } = createHarness();
+    bridge.failNextConnect({
+      code: 'host-key-unknown',
+      message: 'unknown host key',
+      fingerprint: 'SHA256:abc',
+      hostKeyLine: 'example.com ssh-ed25519 AAAA',
+    });
+    await session.start(profile, { shouldAttachTmux: false });
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\npm=apt-get\nuid=1000\n' });
+
+    session.acceptHostKey();
+    await waitForEmulatorWrites();
+    await waitForEmulatorWrites();
+
+    expect(session.status).toBe('connected');
+    expect(bridge.written).toEqual([]);
+  });
+
   it('does not attach when the tmux status is unknown', async () => {
     const { bridge, session } = createHarness();
     await session.start(profile);
@@ -440,9 +474,9 @@ describe('TerminalSession tmux check', () => {
   });
 
   it('lists every tmux session by its full name and reads them back over exec', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     bridge.queueExecResult({
       exitCode: 0,
       stderr: '',
@@ -456,6 +490,17 @@ describe('TerminalSession tmux check', () => {
     });
     expect(bridge.loginShellCalls).toEqual([tmuxCheckUtil.loginListScript]);
     expect(bridge.execCalls[1]).toBe(tmuxCheckUtil.readListScript);
+  });
+
+  it('reports no current session while the shell is detached, whatever other clients show', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\nuid=1000\n' });
+    await session.start(profile, { shouldAttachTmux: false });
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'ts=work\nts=play\nrc=0\ncs=play\n' });
+
+    const result = await session.listTmuxSessions();
+
+    expect(result).toEqual({ kind: 'sessions', currentSessionName: null, sessionNames: ['work', 'play'] });
   });
 
   it('returns an empty tmux session list while not connected', async () => {
@@ -677,21 +722,23 @@ describe('TerminalSession.cloneTmuxSession', () => {
 
 describe('TerminalSession.focusTmuxSession', () => {
   it('switches the attached client without writing to the terminal', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
+    const writtenAfterStart = bridge.written.length;
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-focus=switched\n' });
 
     const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
 
     expect(wasFocused).toBe(true);
     expect(bridge.execCalls).toContain(tmuxAttachUtil.toFocusScript({ sessionName: 'work' }));
+    expect(bridge.written.slice(writtenAfterStart)).toEqual([]);
   });
 
   it('writes an attach command into the terminal when no client is attached', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     const writtenAfterStart = bridge.written.length;
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-focus=detached\n' });
 
@@ -703,10 +750,43 @@ describe('TerminalSession.focusTmuxSession', () => {
     ]);
   });
 
-  it('returns false without writing when the focus outcome is unknown', async () => {
+  it('attaches in the shell without switching another client while the shell is detached', async () => {
     const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\nuid=1000\n' });
+    await session.start(profile, { shouldAttachTmux: false });
+    await waitForEmulatorWrites();
+    const execCountAfterStart = bridge.execCalls.length;
+
+    const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
+
+    expect(wasFocused).toBe(true);
+    expect(bridge.execCalls.slice(execCountAfterStart)).toEqual([]);
+    expect(bridge.written).toEqual([` ${tmuxAttachUtil.toAttachSessionCommand({ sessionName: 'work' })}\r`]);
+    expect(session.isRemoteScrollEnabled).toBe(true);
+  });
+
+  it('attaches in the shell after the shell was detached from tmux', async () => {
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-detach=detached\n' });
+    await session.detachTmuxSession();
+    const execCountAfterDetach = bridge.execCalls.length;
+    const writtenAfterDetach = bridge.written.length;
+
+    const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
+
+    expect(wasFocused).toBe(true);
+    expect(bridge.execCalls.slice(execCountAfterDetach)).toEqual([]);
+    expect(bridge.written.slice(writtenAfterDetach)).toEqual([
+      ` ${tmuxAttachUtil.toAttachSessionCommand({ sessionName: 'work' })}\r`,
+    ]);
+  });
+
+  it('returns false without writing when the focus outcome is unknown', async () => {
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     const writtenAfterStart = bridge.written.length;
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: '' });
 
@@ -726,9 +806,9 @@ describe('TerminalSession.focusTmuxSession', () => {
   });
 
   it('returns false when the exec channel fails', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     bridge.queueExecResult(new Error('exec failed'));
 
     const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
@@ -739,9 +819,9 @@ describe('TerminalSession.focusTmuxSession', () => {
 
 describe('TerminalSession.detachTmuxSession', () => {
   it('detaches the attached client over the exec channel without writing to the terminal', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     const writtenAfterStart = bridge.written.length;
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-detach=detached\n' });
 
@@ -753,9 +833,9 @@ describe('TerminalSession.detachTmuxSession', () => {
   });
 
   it('treats a missing client as success without writing', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     const writtenAfterStart = bridge.written.length;
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-detach=none\n' });
 
@@ -766,14 +846,27 @@ describe('TerminalSession.detachTmuxSession', () => {
   });
 
   it('returns false when the detach outcome is unknown', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: '' });
 
     const wasDetached = await session.detachTmuxSession();
 
     expect(wasDetached).toBe(false);
+  });
+
+  it('leaves other tmux clients alone while the shell is not attached', async () => {
+    const { bridge, session } = createHarness();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\nuid=1000\n' });
+    await session.start(profile, { shouldAttachTmux: false });
+    await waitForEmulatorWrites();
+    const execCountAfterStart = bridge.execCalls.length;
+
+    const wasDetached = await session.detachTmuxSession();
+
+    expect(wasDetached).toBe(true);
+    expect(bridge.execCalls.slice(execCountAfterStart)).toEqual([]);
   });
 
   it('returns false while not connected', async () => {
@@ -786,9 +879,9 @@ describe('TerminalSession.detachTmuxSession', () => {
   });
 
   it('returns false when the exec channel fails', async () => {
-    const { bridge, session } = createHarness();
-    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=missing\n' });
-    await session.start(profile);
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
     bridge.queueExecResult(new Error('exec failed'));
 
     const wasDetached = await session.detachTmuxSession();

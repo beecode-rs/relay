@@ -44,11 +44,13 @@ export class TerminalSessionRegistry {
   async ensureStarted(params: {
     profileId: string;
     connectOptions: SshConnectOptions;
+    shouldAttachTmux?: boolean;
   }): Promise<TerminalSessionEntry> {
+    const startParams = { shouldAttachTmux: params.shouldAttachTmux };
     const existing = this.entries.get(params.profileId);
     if (existing !== undefined) {
       if (!existing.session.isActiveFor(params.connectOptions)) {
-        await existing.session.start(params.connectOptions);
+        await existing.session.start(params.connectOptions, startParams);
       }
       return existing;
     }
@@ -71,7 +73,7 @@ export class TerminalSessionRegistry {
       })
     );
     this.notify();
-    await session.start(params.connectOptions);
+    await session.start(params.connectOptions, startParams);
     return entry;
   }
 

@@ -64,6 +64,25 @@ describe('TerminalSessionRegistry.ensureStarted', () => {
     expect(bridges[0].connectCalls).toHaveLength(2);
   });
 
+  it('passes the tmux auto-attach choice through to the session start', async () => {
+    const bridges: MockSshBridge[] = [];
+    const registry = new TerminalSessionRegistry({
+      portFactory: () => {
+        const bridge = createMockSshBridge();
+        bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux=present\nuid=1000\n' });
+        bridges.push(bridge);
+        return bridge;
+      },
+    });
+    await registry.ensureStarted({ profileId: 'a', connectOptions: toOptions('a.example.com'), shouldAttachTmux: false });
+    await registry.ensureStarted({ profileId: 'b', connectOptions: toOptions('b.example.com') });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(bridges[0].written).toEqual([]);
+    expect(bridges[1].written.join('')).toContain('attach-session');
+  });
+
   it('keeps servers on separate ports', async () => {
     const { bridges, registry } = createRegistryHarness();
     await registry.ensureStarted({ profileId: 'a', connectOptions: toOptions('a.example.com') });

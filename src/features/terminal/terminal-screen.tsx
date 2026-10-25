@@ -96,6 +96,7 @@ export type TerminalScreenRegistry = {
   ensureStarted(params: {
     profileId: string;
     connectOptions: SshConnectOptions;
+    shouldAttachTmux?: boolean;
   }): Promise<TerminalScreenRegistryEntry>;
   disconnect(profileId: string): void;
   subscribe(listener: () => void): () => void;
@@ -825,7 +826,8 @@ export function TerminalScreen({
   };
 
   // Selecting an instance row shows its detached terminal: a saved-but-not-
-  // connected instance is started first, then tmux is detached to the raw shell.
+  // connected instance is started without the tmux auto-attach, a connected
+  // one has tmux detached to the raw shell.
   const handleDrawerSelectServer = (targetProfileId: string) => {
     setIsDrawerOpen(false);
     const entry = registry.find(targetProfileId);
@@ -839,7 +841,11 @@ export function TerminalScreen({
         return null;
       }
       try {
-        return await registry.ensureStarted({ profileId: targetProfileId, connectOptions: options });
+        return await registry.ensureStarted({
+          profileId: targetProfileId,
+          connectOptions: options,
+          shouldAttachTmux: false,
+        });
       } catch {
         return null;
       }
@@ -857,8 +863,8 @@ export function TerminalScreen({
     // The instance row is the "machine" view: detach tmux and show the raw shell.
     void (async () => {
       if (wasStartedNow) {
-        // A fresh connection may still be auto-attaching its remembered tmux
-        // session; let that settle before detaching to the raw shell.
+        // A fresh connection skipped the tmux auto-attach, so its shell is
+        // already raw (the detach below is a no-op); load the drawer listing.
         applyTmuxListResult(entry.profileId, await entry.session.listTmuxSessions());
       }
       const wasDetached = await entry.session.detachTmuxSession();

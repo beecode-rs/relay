@@ -1688,6 +1688,7 @@ describe('TerminalScreen instance management', () => {
       },
       [PROFILE_ID]
     );
+    const ensureStartedSpy = jest.spyOn(registry, 'ensureStarted');
     await renderInstanceScreen({
       loader: loaderByProfile({ [PROFILE_B]: CONNECT_OPTIONS_B, [PROFILE_ID]: CONNECT_OPTIONS }),
       registry,
@@ -1700,6 +1701,12 @@ describe('TerminalScreen instance management', () => {
 
     await waitFor(() => {
       expect(sessionB.started).toHaveLength(1);
+    });
+    // The instance view wants the raw shell, so the fresh connection skips the tmux auto-attach.
+    expect(ensureStartedSpy).toHaveBeenCalledWith({
+      connectOptions: CONNECT_OPTIONS_B,
+      profileId: PROFILE_B,
+      shouldAttachTmux: false,
     });
     // The instance row is the "machine" view: tmux is detached to the raw shell.
     await waitFor(() => {
