@@ -32,6 +32,33 @@ describe('terminalGlyphUtil', () => {
     expect(terminalGlyphUtil.toRenderableText('a⠀b')).toBe('a b');
   });
 
+  it('substitutes the opencode progress wave and status glyphs', () => {
+    expect(terminalGlyphUtil.toRenderableText('■■■⬝⬝⬝⬝⬝')).toBe('■■■▪▪▪▪▪');
+    expect(terminalGlyphUtil.toRenderableText('⊙ 1 MCP failed')).toBe('◎ 1 MCP failed');
+  });
+
+  it('substitutes the opencode spinner frames', () => {
+    expect(terminalGlyphUtil.toRenderableText('▫▪▣■▣▪')).toBe('▫▪■■■▪');
+    expect(terminalGlyphUtil.toRenderableText('◰◳◲◱')).toBe('▘▝▗▖');
+    expect(terminalGlyphUtil.toRenderableText('▧▩▨▩')).toBe('▒░▓░');
+    expect(terminalGlyphUtil.toRenderableText('◧⬒◨⬓')).toBe('◧▀◨▄');
+    expect(terminalGlyphUtil.toRenderableText('▁▂▃▄▅▆▇█')).toBe('▁▂▃▄▅▆▇█');
+  });
+
+  it('substitutes progress rectangles other tools emit', () => {
+    expect(terminalGlyphUtil.toRenderableText('▰▰▰▱▱')).toBe('■■■□□');
+    expect(terminalGlyphUtil.toRenderableText('▮▮▮▯')).toBe('■■■□');
+  });
+
+  it('replaces uncovered symbol glyphs with a generic covered glyph', () => {
+    expect(terminalGlyphUtil.toRenderableText('⌬')).toBe('□');
+    expect(terminalGlyphUtil.toRenderableText('⬢')).toBe('□');
+  });
+
+  it('keeps east-asian-wide symbol glyphs untouched', () => {
+    expect(terminalGlyphUtil.toRenderableText('⬛⭐')).toBe('⬛⭐');
+  });
+
   it('leaves surrogate pairs untouched', () => {
     expect(terminalGlyphUtil.toRenderableText('a📈b ✓')).toBe('a📈b √');
   });
