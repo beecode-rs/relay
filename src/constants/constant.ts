@@ -1,6 +1,7 @@
 export const constant = {
   app: {
     beecodeWebsiteUrl: 'https://beecode.rs',
+    githubRepositoryUrl: 'https://github.com/beecode-rs/relay',
   },
   deviceKey: {
     accessGroup: 'com.beecode.devicekeys',

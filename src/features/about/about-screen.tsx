@@ -23,6 +23,10 @@ export const AboutScreen = (): JSX.Element => {
     void Linking.openURL(constant.app.beecodeWebsiteUrl);
   };
 
+  const handleOpenGitHubRepository = (): void => {
+    void Linking.openURL(constant.app.githubRepositoryUrl);
+  };
+
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={[styles.safeArea, { backgroundColor: navigationTheme.colors.background }]}>
       <AppTopBar onPressBack={handleBack} testID="about-top-bar" title="About" />
@@ -65,6 +69,17 @@ export const AboutScreen = (): JSX.Element => {
             beecode.rs
           </Text>
         </Pressable>
+        <Pressable
+          accessibilityLabel="Open the project's GitHub repository"
+          accessibilityRole="link"
+          onPress={handleOpenGitHubRepository}
+          style={styles.githubLink}
+          testID="about-github-link"
+        >
+          <Text style={[styles.githubLinkText, { color: md3Theme.colors.primary }]} variant="bodyMedium">
+            GitHub
+          </Text>
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -85,6 +100,12 @@ const styles = StyleSheet.create({
   },
   contentScroll: {
     flex: 1,
+  },
+  githubLink: {
+    marginTop: 8,
+  },
+  githubLinkText: {
+    textAlign: 'center',
   },
   header: {
     alignItems: 'center',

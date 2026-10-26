@@ -64,6 +64,7 @@ describe('AboutScreen', () => {
     expect(screen.getByText('Made by beecode')).toBeTruthy();
     expect(screen.getByText('beecode.rs')).toBeTruthy();
     expect(screen.getByTestId('about-beecode-logo')).toBeTruthy();
+    expect(screen.getByText('GitHub')).toBeTruthy();
   });
 
   it('navigates back from the top bar', async () => {
@@ -81,5 +82,14 @@ describe('AboutScreen', () => {
     await fireEvent.press(screen.getByTestId('about-beecode-link'));
 
     expect(openUrlSpy).toHaveBeenCalledWith('https://beecode.rs');
+  });
+
+  it('opens the GitHub repository from the about screen', async () => {
+    const openUrlSpy = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    await renderScreen(createStorage());
+
+    await fireEvent.press(screen.getByTestId('about-github-link'));
+
+    expect(openUrlSpy).toHaveBeenCalledWith('https://github.com/beecode-rs/relay');
   });
 });
