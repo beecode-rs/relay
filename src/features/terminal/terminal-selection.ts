@@ -1,4 +1,6 @@
 import type { StyledRow, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
+import type { TerminalGrapheme } from '@/services/terminal/terminal-unicode-provider';
+import { terminalUnicodeWidthUtil } from '@/services/terminal/terminal-unicode-provider';
 
 export type TerminalSelectionMarkerName = 'from' | 'to';
 
@@ -30,6 +32,11 @@ export const rowTextOf = (row: StyledRow): string => {
   return row.segments.reduce((text, segment) => {
     return text + segment.text;
   }, '');
+};
+
+/** Grid columns a row occupies under the unicode provider's widths. */
+export const rowWidthOf = (row: StyledRow): number => {
+  return terminalUnicodeWidthUtil.widthOf(rowTextOf(row));
 };
 
 export const comparePositions = (
@@ -75,7 +82,11 @@ export const lastWordRange = (snapshot: TerminalSnapshot): TerminalSelectionRang
       const text = rowTextOf(row as StyledRow);
       const match = text.match(/\S+$/);
       if (match !== null && match.index !== undefined) {
-        return { endCol: match.index + match[0].length - 1, index, startCol: match.index };
+        return {
+          endCol: terminalUnicodeWidthUtil.columnOfTextIndex(text, match.index + match[0].length - 1),
+          index,
+          startCol: terminalUnicodeWidthUtil.columnOfTextIndex(text, match.index),
+        };
       }
 
       return found;
@@ -100,16 +111,30 @@ export const wordRangeAt = (
   const lastRowIndex = snapshot.rows.length - 1;
   const rowIndex = Math.min(Math.max(position.line - snapshot.firstLine, 0), lastRowIndex);
   const line = snapshot.firstLine + rowIndex;
-  const text = rowTextOf(snapshot.rows[rowIndex] as StyledRow);
-  if (text.length === 0) {
+  const row = snapshot.rows[rowIndex] as StyledRow;
+  const text = rowTextOf(row);
+  const rowWidth = rowWidthOf(row);
+  if (rowWidth === 0) {
     return { end: { col: 0, line }, start: { col: 0, line } };
   }
-  const col = Math.min(Math.max(position.col, 0), text.length - 1);
-  if (!isWordChar(text[col] as string)) {
+  const col = Math.min(Math.max(position.col, 0), rowWidth - 1);
+  // Columns are grid cells; word walking happens over the text, so map in
+  // and back out through the provider's grapheme widths.
+  const textIndex = terminalUnicodeWidthUtil.textIndexOfColumn(text, col);
+  if (textIndex >= text.length || !isWordChar(text.charAt(textIndex))) {
     return { end: { col, line }, start: { col, line } };
   }
 
-  return { end: { col: wordEndCol(text, col), line }, start: { col: wordStartCol(text, col), line } };
+  return {
+    end: {
+      col: terminalUnicodeWidthUtil.columnOfTextIndex(text, wordEndCol(text, textIndex)),
+      line,
+    },
+    start: {
+      col: terminalUnicodeWidthUtil.columnOfTextIndex(text, wordStartCol(text, textIndex)),
+      line,
+    },
+  };
 };
 
 const flipMarker = (marker: TerminalSelectionMarkerName): TerminalSelectionMarkerName => {
@@ -147,8 +172,8 @@ const clampPosition = (
   const lastLine = snapshot.firstLine + snapshot.rows.length - 1;
   const line = Math.min(Math.max(position.line, firstLine), Math.max(firstLine, lastLine));
   const row = snapshot.rows[line - snapshot.firstLine];
-  const textLength = row === undefined ? 0 : rowTextOf(row).length;
-  const col = Math.min(Math.max(position.col, 0), textLength);
+  const rowWidth = row === undefined ? 0 : rowWidthOf(row);
+  const col = Math.min(Math.max(position.col, 0), rowWidth);
   if (line === position.line && col === position.col) {
     return position;
   }
@@ -182,9 +207,22 @@ export const extractSelectedText = (
     const text = rowTextOf(row);
     const isFirstLine = index === 0;
     const isLastLine = index === lineCount - 1;
-    const startCol = isFirstLine ? Math.min(range.start.col, text.length) : 0;
-    const endCol = isLastLine ? Math.min(range.end.col + 1, text.length) : text.length;
-    return text.slice(startCol, endCol);
+    if (!isFirstLine && !isLastLine) {
+      return text;
+    }
+    // Selection columns are grid cells; convert them to text indexes over
+    // whole graphemes so wide clusters are never cut in half.
+    const graphemes = terminalUnicodeWidthUtil.toGraphemes(text);
+    const graphemeAtColumn = (column: number): TerminalGrapheme | undefined => {
+      return graphemes.find((grapheme) => {
+        return column < grapheme.column + grapheme.width;
+      });
+    };
+    const sliceStart = isFirstLine ? (graphemeAtColumn(range.start.col)?.start ?? text.length) : 0;
+    const sliceEnd = isLastLine
+      ? (graphemeAtColumn(range.end.col)?.end ?? text.length)
+      : text.length;
+    return text.slice(sliceStart, sliceEnd);
   });
   return lines.join('\n');
 };

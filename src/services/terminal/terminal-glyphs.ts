@@ -5,13 +5,11 @@
 // the system font renders them at its own, narrower advance width and the row
 // squishes out of the cell grid. Substitute the closest covered glyph instead.
 // Every substitute is a single-cell character, so column alignment and cell
-// widths are preserved.
+// widths are preserved. East-Asian-wide glyphs (⏩⏪⏫⏬ etc.) are left to the
+// system emoji fallback: the unicode provider gives them two columns and the
+// fallback glyph matches, so substituting them with a single-cell character
+// would shift every following column.
 const GLYPH_SUBSTITUTIONS: Readonly<Record<string, string>> = {
-  // Media controls (⏩⏪⏭⏮⏯⏴⏵⏶⏷⏸⏹⏺) — e.g. the Claude Code status line.
-  '⏩': '»',
-  '⏪': '«',
-  '⏫': '↑',
-  '⏬': '↓',
   '⏭': '»',
   '⏮': '«',
   '⏯': '▸',
@@ -111,6 +109,28 @@ const GLYPH_SUBSTITUTIONS: Readonly<Record<string, string>> = {
 const BRAILLE_FIRST_CODE_POINT = 0x2800;
 const BRAILLE_LAST_CODE_POINT = 0x28ff;
 
+// Regional indicator letters (the flag alphabet) have no narrow glyph: an
+// isolated one renders as a squared letter about two columns wide while the
+// emulator grid gives it a single cell, pushing the rest of the row out of
+// alignment. A pair arrives in one cell (the unicode provider joins it) and
+// is left alone so it shapes as a flag; a lone indicator is substituted with
+// its ASCII letter, which fits a single cell in the bundled fonts.
+const REGIONAL_INDICATOR_FIRST_CODE_POINT = 0x1f1e6;
+const REGIONAL_INDICATOR_LAST_CODE_POINT = 0x1f1ff;
+const CAPITAL_A_CODE_POINT = 0x41;
+
+const isRegionalIndicator = (character: string): boolean => {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return (
+    codePoint >= REGIONAL_INDICATOR_FIRST_CODE_POINT && codePoint <= REGIONAL_INDICATOR_LAST_CODE_POINT
+  );
+};
+
+const toIndicatorLetter = (character: string): string => {
+  const codePoint = character.codePointAt(0) ?? REGIONAL_INDICATOR_FIRST_CODE_POINT;
+  return String.fromCharCode(CAPITAL_A_CODE_POINT + (codePoint - REGIONAL_INDICATOR_FIRST_CODE_POINT));
+};
+
 // Exact symbol-glyph coverage of the bundled JetBrains Mono 400Regular /
 // 700Bold builds, generated from the fonts' cmap for the ranges below. A
 // symbol glyph that is covered needs no substitution; one that is not falls
@@ -168,6 +188,12 @@ export const terminalGlyphUtil = {
         characters[index] = substitute;
         isSubstituted = true;
       }
+    }
+    // A cell holding exactly one indicator letter has no partner to pair
+    // with, so substitute it where the whole cell text is known.
+    const onlyCharacter = characters.length === 1 ? (characters[0] as string) : null;
+    if (onlyCharacter !== null && isRegionalIndicator(onlyCharacter)) {
+      return toIndicatorLetter(onlyCharacter);
     }
     return isSubstituted ? characters.join('') : text;
   },

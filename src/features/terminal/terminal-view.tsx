@@ -11,7 +11,7 @@ import type {
 
 import { constant } from '@/constants/constant';
 
-import { rowSelectionOf, rowTextOf } from '@/features/terminal/terminal-selection';
+import { rowSelectionOf, rowWidthOf } from '@/features/terminal/terminal-selection';
 import type {
   TerminalSelectionPosition,
   TerminalSelectionState,
@@ -648,7 +648,7 @@ export function TerminalView({
     const isCursorRow = isCursorVisible && snapshot.cursor.y - scrollbackCount === y;
     const cursorColumn = isCursorRow ? snapshot.cursor.x : null;
     const rowSelection =
-      selection === null ? null : rowSelectionOf(selection, line, rowTextOf(row).length);
+      selection === null ? null : rowSelectionOf(selection, line, rowWidthOf(row));
     return (
       <TerminalRow
         boldFontFamily={boldFontFamily}

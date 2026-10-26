@@ -12,7 +12,10 @@ describe('terminalGlyphUtil', () => {
     expect(terminalGlyphUtil.toRenderableText('⏺')).toBe('●');
     expect(terminalGlyphUtil.toRenderableText('⏸')).toBe('║');
     expect(terminalGlyphUtil.toRenderableText('⏹')).toBe('■');
-    expect(terminalGlyphUtil.toRenderableText('⏩⏪')).toBe('»«');
+  });
+
+  it('leaves east-asian-wide media glyphs to the system fallback', () => {
+    expect(terminalGlyphUtil.toRenderableText('⏩⏪')).toBe('⏩⏪');
   });
 
   it('substitutes check, cross, circle and star marks', () => {
@@ -57,6 +60,18 @@ describe('terminalGlyphUtil', () => {
 
   it('keeps east-asian-wide symbol glyphs untouched', () => {
     expect(terminalGlyphUtil.toRenderableText('⬛⭐')).toBe('⬛⭐');
+  });
+
+  it('substitutes a lone regional indicator letter with its ASCII letter', () => {
+    // A lone indicator cell has no partner to shape a flag with and its
+    // squared-letter glyph is about two columns wide.
+    expect(terminalGlyphUtil.toRenderableText('🇸')).toBe('S');
+    expect(terminalGlyphUtil.toRenderableText('🇦')).toBe('A');
+    expect(terminalGlyphUtil.toRenderableText('🇿')).toBe('Z');
+  });
+
+  it('keeps regional indicator pairs untouched for flag shaping', () => {
+    expect(terminalGlyphUtil.toRenderableText('🇸🇦')).toBe('🇸🇦');
   });
 
   it('leaves surrogate pairs untouched', () => {

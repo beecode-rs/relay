@@ -5,6 +5,7 @@ import type {
   TerminalRowSelection,
 } from '@/features/terminal/terminal-selection';
 import type { StyledRow, StyledSegment, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
+import { terminalUnicodeWidthUtil } from '@/services/terminal/terminal-unicode-provider';
 
 type SelectionCellKind = 'fromMarker' | 'selected' | 'toMarker';
 
@@ -122,7 +123,7 @@ export const terminalViewUtil = {
     const columnEnds = this._columnEndsOf(segments);
 
     return segments.flatMap((segment, segmentIndex) => {
-      const columnStart = columnEnds[segmentIndex] - segment.text.length;
+      const columnStart = columnEnds[segmentIndex] - terminalUnicodeWidthUtil.widthOf(segment.text);
 
       return this._selectionPiecesOf({ columnStart, selection, segment });
     });
@@ -142,15 +143,28 @@ export const terminalViewUtil = {
       });
     }
     const segment = row.segments[hitIndex];
-    const offsetWithinSegment = cursorColumn - (columnEnds[hitIndex] - segment.text.length);
+    const segmentStartColumn = columnEnds[hitIndex] - terminalUnicodeWidthUtil.widthOf(segment.text);
+    const graphemes = terminalUnicodeWidthUtil.toGraphemes(segment.text);
+    const hitGrapheme = graphemes.find((grapheme) => {
+      return cursorColumn - segmentStartColumn < grapheme.column + grapheme.width;
+    });
+    if (hitGrapheme === undefined) {
+      return this._segmentsWithTrailingCursor({
+        cursorColumn,
+        row,
+        rowEndColumn: columnEnds[columnEnds.length - 1] ?? 0,
+      });
+    }
+    // The cursor highlights the whole grapheme under its column, so wide
+    // emoji invert fully and clusters are never cut in half.
     const cursorSegment: StyledSegment = {
       ...segment,
       inverse: true,
-      text: segment.text.slice(offsetWithinSegment, offsetWithinSegment + 1),
+      text: segment.text.slice(hitGrapheme.start, hitGrapheme.end),
     };
-    const head = { ...segment, text: segment.text.slice(0, offsetWithinSegment) };
+    const head = { ...segment, text: segment.text.slice(0, hitGrapheme.start) };
     const tail = [
-      { ...segment, text: segment.text.slice(offsetWithinSegment + 1) },
+      { ...segment, text: segment.text.slice(hitGrapheme.end) },
       ...row.segments.slice(hitIndex + 1),
     ];
 
@@ -161,14 +175,26 @@ export const terminalViewUtil = {
     ];
   },
 
-  _cellKindAt(selection: TerminalRowSelection, column: number): SelectionCellKind | null {
-    if (selection.fromMarkerColumn === column) {
+  _cellKindWithin(
+    selection: TerminalRowSelection,
+    fromColumn: number,
+    toColumn: number
+  ): SelectionCellKind | null {
+    if (
+      selection.fromMarkerColumn !== null &&
+      fromColumn <= selection.fromMarkerColumn &&
+      selection.fromMarkerColumn <= toColumn
+    ) {
       return 'fromMarker';
     }
-    if (selection.toMarkerColumn === column) {
+    if (
+      selection.toMarkerColumn !== null &&
+      fromColumn <= selection.toMarkerColumn &&
+      selection.toMarkerColumn <= toColumn
+    ) {
       return 'toMarker';
     }
-    if (column >= selection.startColumn && column <= selection.endColumn) {
+    if (toColumn >= selection.startColumn && fromColumn <= selection.endColumn) {
       return 'selected';
     }
 
@@ -178,7 +204,7 @@ export const terminalViewUtil = {
   _columnEndsOf(segments: StyledSegment[]): number[] {
     return segments.reduce<number[]>((ends, segment) => {
       const previousEnd = ends[ends.length - 1] ?? 0;
-      ends.push(previousEnd + segment.text.length);
+      ends.push(previousEnd + terminalUnicodeWidthUtil.widthOf(segment.text));
 
       return ends;
     }, []);
@@ -213,21 +239,28 @@ export const terminalViewUtil = {
     segment: StyledSegment;
   }): TerminalRowPiece[] {
     const { columnStart, selection, segment } = params;
-    const runs = Array.from(segment.text)
-      .map((char, index) => {
-        return { char, kind: this._cellKindAt(selection, columnStart + index) };
-      })
-      .reduce<SelectionRun[]>((runAccumulator, cell) => {
-        const previous = runAccumulator[runAccumulator.length - 1];
-        if (previous !== undefined && previous.kind === cell.kind) {
-          previous.text += cell.char;
-
-          return runAccumulator;
-        }
-        runAccumulator.push({ kind: cell.kind, text: cell.char });
+    // Grapheme spans, not per-code-unit columns: a wide emoji or a joined
+    // cluster highlights as one unit.
+    const cells = terminalUnicodeWidthUtil.toGraphemes(segment.text).map((grapheme) => {
+      const fromColumn = columnStart + grapheme.column;
+      return {
+        fromColumn,
+        kind: this._cellKindWithin(selection, fromColumn, fromColumn + grapheme.width - 1),
+        text: segment.text.slice(grapheme.start, grapheme.end),
+        toColumn: fromColumn + grapheme.width - 1,
+      };
+    });
+    const runs = cells.reduce<SelectionRun[]>((runAccumulator, cell) => {
+      const previous = runAccumulator[runAccumulator.length - 1];
+      if (previous !== undefined && previous.kind === cell.kind) {
+        previous.text += cell.text;
 
         return runAccumulator;
-      }, []);
+      }
+      runAccumulator.push({ kind: cell.kind, text: cell.text });
+
+      return runAccumulator;
+    }, []);
 
     return runs.map((run) => {
       if (run.kind === null) {
