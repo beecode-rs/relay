@@ -5,7 +5,6 @@ import { constant } from '@/constants/constant';
 import type { TerminalSelectionPosition, TerminalSelectionState } from '@/features/terminal/terminal-selection';
 import { TerminalView } from '@/features/terminal/terminal-view';
 import { terminalViewUtil } from '@/features/terminal/terminal-view-util';
-import { terminalPaletteUtil } from '@/services/terminal/terminal-palette';
 import type { StyledSegment, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 
 const FONT = {
@@ -16,7 +15,7 @@ const FONT = {
 };
 
 const segment = (overrides: Partial<StyledSegment>): StyledSegment => {
-  return { bold: false, inverse: false, text: '', underline: false, ...overrides };
+  return { bold: false, inverse: false, italic: false, text: '', underline: false, ...overrides };
 };
 
 const buildSnapshot = (cursor: { x: number; y: number }, isAlternateBuffer = false): TerminalSnapshot => {
@@ -25,7 +24,7 @@ const buildSnapshot = (cursor: { x: number; y: number }, isAlternateBuffer = fal
       {
         segments: [
           segment({ text: 'hello ' }),
-          segment({ fgColor: 1, text: 'red' }),
+          segment({ fgColor: '#cd0000', text: 'red' }),
           segment({ text: '!' }),
         ],
       },
@@ -133,16 +132,35 @@ const countTextNodes = (node: unknown): number => {
 };
 
 describe('TerminalView', () => {
+  it('renders spaces as no-break spaces so span boundaries keep their cell width', async () => {
+    // Android collapses spaces at nested-span boundaries during measurement,
+    // shifting every following column left (the opencode logo's fragmented
+    // rows). The no-break space keeps the same advance and is never trimmed.
+    await render(
+      <TerminalView
+        isCursorVisible={false}
+        snapshot={{
+          ...buildSnapshot({ x: 0, y: 0 }),
+          rows: [{ segments: [segment({ text: '  ▄  rest' })] }],
+        }}
+        {...FONT}
+      />
+    );
+    expect(screen.getByText('\u00A0\u00A0▄\u00A0\u00A0rest')).toBeTruthy();
+  });
+
   it('renders rows with palette-colored and emphasized segments', async () => {
     const view = await render(
       <TerminalView isCursorVisible={false} snapshot={buildSnapshot({ x: 0, y: 0 })} {...FONT} />
     );
     const red = screen.getByText('red');
-    expect(red.props.style.color).toBe(terminalPaletteUtil.colorAt({ index: 1 }));
+    expect(red.props.style.color).toBe('#cd0000');
     expect(red.props.style.backgroundColor).toBe(constant.terminal.bg);
     const emphasized = screen.getByText('u');
     expect(emphasized.props.style.fontFamily).toBe(FONT.boldFontFamily);
-    expect(emphasized.props.style.fontWeight).toBe('700');
+    // fontWeight must stay unset: Android mis-measures leading whitespace of
+    // spans that carry it, shifting following columns out of the cell grid.
+    expect(emphasized.props.style.fontWeight).toBeUndefined();
     expect(emphasized.props.style.textDecorationLine).toBe('underline');
     expect(countTextNodes(view.toJSON())).toBe(7);
   });
@@ -160,7 +178,7 @@ describe('TerminalView', () => {
       <TerminalView isCursorVisible snapshot={buildSnapshot({ x: 15, y: 1 })} {...FONT} />
     );
     expect(screen.getByText('plain ')).toBeTruthy();
-    expect(screen.getByText('u').props.style.fontWeight).toBe('700');
+    expect(screen.getByText('u').props.style.fontFamily).toBe(FONT.boldFontFamily);
     expect(countTextNodes(view.toJSON())).toBe(9);
   });
 

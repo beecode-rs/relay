@@ -368,9 +368,7 @@ export class TerminalSession {
     // other client (a zombie from a dropped connection, another device), so it
     // attaches in the shell itself.
     if (!this.isTmuxAttached) {
-      this.attachTmuxSessionInShell({ sessionName: params.sessionName });
-
-      return true;
+      return this.attachTmuxSessionInShell({ sessionName: params.sessionName });
     }
     try {
       const result = await this.port.exec(
@@ -386,7 +384,7 @@ export class TerminalSession {
         return false;
       }
       if (outcome.kind === 'detached') {
-        this.attachTmuxSessionInShell({ sessionName: params.sessionName });
+        return this.attachTmuxSessionInShell({ sessionName: params.sessionName });
       }
 
       return true;
@@ -471,10 +469,39 @@ export class TerminalSession {
     return this.batcher.drain();
   }
 
-  private attachTmuxSessionInShell(params: { sessionName: string }): void {
-    this.isTmuxAttached = true;
+  private attachTmuxSessionInShell(params: { sessionName: string }): boolean {
     const attachCommand = tmuxAttachUtil.toAttachSessionCommand({ sessionName: params.sessionName });
-    this.write(`${shellHistoryUtil.toHistorySafeLine({ line: attachCommand })}\r`);
+    this.isTmuxAttached = this.typeShellLine(attachCommand);
+
+    return this.isTmuxAttached;
+  }
+
+  // Internal command lines (tmux attach, history setup) are typed into the
+  // interactive shell, so they must only go out while a shell prompt owns the
+  // input. A full-screen program - opencode, vim, a live tmux client - first
+  // switches the terminal into a TUI mode (application cursor keys, mouse
+  // tracking, or the alternate screen); typing then would feed that program
+  // the line as keystrokes and the trailing \r would submit it, so nothing is
+  // sent until every such mode is off.
+  private get isForegroundProgramActive(): boolean {
+    if (this.emulator === null) {
+      return false;
+    }
+
+    return (
+      this.cursorTracker.isApplicationCursorKeys ||
+      this.emulator.isMouseTrackingEnabled ||
+      this.emulator.isAlternateBuffer
+    );
+  }
+
+  private typeShellLine(line: string): boolean {
+    if (this.isForegroundProgramActive) {
+      return false;
+    }
+    this.write(`${shellHistoryUtil.toHistorySafeLine({ line })}\r`);
+
+    return true;
   }
 
   private toTmuxListResult(params: { outcome: TmuxListOutcome }): TmuxSessionListResult {
@@ -576,6 +603,9 @@ export class TerminalSession {
   }
 
   private async typeInternalLine(line: string): Promise<void> {
+    if (this.isForegroundProgramActive) {
+      return;
+    }
     try {
       await this.port.write(`${line}\r`);
     } catch {
@@ -595,12 +625,11 @@ export class TerminalSession {
         return;
       }
       if (probe.tmuxStatus === 'present') {
-        this.isTmuxAttached = true;
         const attachCommand = tmuxAttachUtil.toCommand({
           preferredSessionName: this.profile?.lastTmuxSessionName,
           startPath: this.profile?.remotePath,
         });
-        this.write(`${shellHistoryUtil.toHistorySafeLine({ line: attachCommand })}\r`);
+        this.isTmuxAttached = this.typeShellLine(attachCommand);
         return;
       }
       if (probe.tmuxStatus !== 'missing') {

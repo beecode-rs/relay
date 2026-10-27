@@ -4,9 +4,13 @@ import { terminalPaletteUtil } from '@/services/terminal/terminal-palette';
 
 export type StyledSegment = {
   text: string;
-  fgColor?: number;
-  bgColor?: number;
+  // Resolved hex colors ('#rrggbb'); palette-index colors resolve through the
+  // palette and RGB colors stay exact so truecolor themes (opencode's grays)
+  // are not snapped to the nearest 256-palette entry.
+  fgColor?: string;
+  bgColor?: string;
   bold: boolean;
+  italic: boolean;
   underline: boolean;
   inverse: boolean;
 };
@@ -47,50 +51,32 @@ export const createScrollbackCache = (): ScrollbackCache => {
 
 type CellStyle = Omit<StyledSegment, 'text'>;
 
-const hexChannelOf = (hex: string, offset: number): number => {
-  return parseInt(hex.slice(offset, offset + 2), 16);
+const hexColorOf = (rgb: number): string => {
+  return `#${rgb.toString(16).padStart(6, '0')}`;
 };
 
-const nearestPaletteIndex = (rgb: number): number => {
-  const red = (rgb >> 16) & 0xff;
-  const green = (rgb >> 8) & 0xff;
-  const blue = rgb & 0xff;
-  return Array.from({ length: 256 }, (_value, index) => {
-    const hex = terminalPaletteUtil.colorAt({ index });
-    const redDelta = red - hexChannelOf(hex, 1);
-    const greenDelta = green - hexChannelOf(hex, 3);
-    const blueDelta = blue - hexChannelOf(hex, 5);
-    return { distance: redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta, index };
-  }).reduce((best, candidate) => {
-    if (candidate.distance < best.distance) {
-      return candidate;
-    }
-    return best;
-  }).index;
-};
-
-const fgColorOf = (cell: IBufferCell): number | undefined => {
+const fgColorOf = (cell: IBufferCell): string | undefined => {
   if (cell.isFgDefault()) {
     return undefined;
   }
   if (cell.isFgPalette()) {
-    return cell.getFgColor();
+    return terminalPaletteUtil.colorAt({ index: cell.getFgColor() });
   }
   if (cell.isFgRGB()) {
-    return nearestPaletteIndex(cell.getFgColor());
+    return hexColorOf(cell.getFgColor());
   }
   return undefined;
 };
 
-const bgColorOf = (cell: IBufferCell): number | undefined => {
+const bgColorOf = (cell: IBufferCell): string | undefined => {
   if (cell.isBgDefault()) {
     return undefined;
   }
   if (cell.isBgPalette()) {
-    return cell.getBgColor();
+    return terminalPaletteUtil.colorAt({ index: cell.getBgColor() });
   }
   if (cell.isBgRGB()) {
-    return nearestPaletteIndex(cell.getBgColor());
+    return hexColorOf(cell.getBgColor());
   }
   return undefined;
 };
@@ -116,6 +102,7 @@ const styleOfCell = (cell: IBufferCell): CellStyle => {
     fgColor: fgColorOf(cell),
     bgColor: bgColorOf(cell),
     bold: cell.isBold() !== 0,
+    italic: cell.isItalic() !== 0,
     underline: cell.isUnderline() !== 0,
     inverse: cell.isInverse() !== 0,
   };
@@ -126,6 +113,7 @@ const isSameStyle = (segment: StyledSegment, style: CellStyle): boolean => {
     segment.fgColor === style.fgColor &&
     segment.bgColor === style.bgColor &&
     segment.bold === style.bold &&
+    segment.italic === style.italic &&
     segment.underline === style.underline &&
     segment.inverse === style.inverse
   );

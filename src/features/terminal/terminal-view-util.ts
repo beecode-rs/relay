@@ -22,11 +22,22 @@ type SelectionRun = {
 const EMPTY_CURSOR_SEGMENT: StyledSegment = {
   bold: false,
   inverse: true,
+  italic: false,
   text: ' ',
   underline: false,
 };
 
 export const terminalViewUtil = {
+  // Android collapses spaces at nested text-span boundaries during
+  // measurement, so a row fragmented into space-leading/-trailing spans
+  // (opencode's block-letter logo and its accent backgrounds) shifts every
+  // following column left. The no-break space has the same 0.6em advance in
+  // JetBrains Mono and is never collapsed, so rendered text swaps one for
+  // one; selection geometry still measures the original space.
+  toDisplayText(text: string): string {
+    return text.replace(/ /g, '\u00A0');
+  },
+
   autoScrollDirectionOf(params: {
     lineHeight: number;
     markerLine: number;
@@ -179,8 +190,7 @@ export const terminalViewUtil = {
     selection: TerminalRowSelection,
     fromColumn: number,
     toColumn: number
-  ): SelectionCellKind | null {
-    if (
+  ): SelectionCellKind | null {    if (
       selection.fromMarkerColumn !== null &&
       fromColumn <= selection.fromMarkerColumn &&
       selection.fromMarkerColumn <= toColumn
@@ -291,7 +301,7 @@ export const terminalViewUtil = {
       return [];
     }
 
-    return [{ bold: false, inverse: false, text: ' '.repeat(columnCount), underline: false }];
+    return [{ bold: false, inverse: false, italic: false, text: ' '.repeat(columnCount), underline: false }];
   },
 
   _unitsWithin(params: { dividendPx: number; divisorPx: number }): number {

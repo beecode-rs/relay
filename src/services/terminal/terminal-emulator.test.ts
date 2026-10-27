@@ -45,6 +45,14 @@ describe('createTerminalEmulator', () => {
     expect(snapshot.cursor).toEqual({ x: 0, y: 0 });
   });
 
+  it('reports the alternate buffer while a full-screen program owns it', async () => {
+    const emulator = createTerminalEmulator({ cols: 80, rows: 24 });
+    await writeAndProcess(emulator, '\x1b[?1049h');
+    expect(emulator.isAlternateBuffer).toBe(true);
+    await writeAndProcess(emulator, '\x1b[?1049l');
+    expect(emulator.isAlternateBuffer).toBe(false);
+  });
+
   it('keeps scrollback beyond the viewport', async () => {
     const emulator = createTerminalEmulator({ cols: 80, rows: 2 });
     await writeAndProcess(emulator, 'one\r\ntwo\r\nthree');

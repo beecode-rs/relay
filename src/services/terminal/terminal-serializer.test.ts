@@ -31,9 +31,9 @@ describe('serializeTerminal', () => {
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([]);
     expect(snapshot.rows[1]?.segments).toEqual([
-      { text: 'hello ', bold: false, underline: false, inverse: false },
-      { text: 'red', fgColor: 1, bold: false, underline: false, inverse: false },
-      { text: '!', bold: false, underline: false, inverse: false },
+      { text: 'hello ', bold: false, italic: false, underline: false, inverse: false },
+      { text: 'red', fgColor: '#cd0000', bold: false, italic: false, underline: false, inverse: false },
+      { text: '!', bold: false, italic: false, underline: false, inverse: false },
     ]);
     expect(snapshot.cursor).toEqual({ x: 10, y: 1 });
   });
@@ -49,25 +49,49 @@ describe('serializeTerminal', () => {
     const terminal = await createWrittenTerminal('\x1b[1mbold\x1b[22m\x1b[4munder\x1b[24m\x1b[7minv\x1b[27m');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: 'bold', bold: true, underline: false, inverse: false },
-      { text: 'under', bold: false, underline: true, inverse: false },
-      { text: 'inv', bold: false, underline: false, inverse: true },
+      { text: 'bold', bold: true, italic: false, underline: false, inverse: false },
+      { text: 'under', bold: false, italic: false, underline: true, inverse: false },
+      { text: 'inv', bold: false, italic: false, underline: false, inverse: true },
     ]);
   });
 
-  it('carries background colors as palette indices', async () => {
+  it('resolves background palette colors to hex', async () => {
     const terminal = await createWrittenTerminal('\x1b[41mwarn\x1b[49m');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: 'warn', bgColor: 1, bold: false, underline: false, inverse: false },
+      { text: 'warn', bgColor: '#cd0000', bold: false, italic: false, underline: false, inverse: false },
     ]);
   });
 
-  it('maps true-color foregrounds to the nearest palette index', async () => {
+  it('keeps true-color foregrounds as exact hex instead of snapping to the palette', async () => {
     const terminal = await createWrittenTerminal('\x1b[38;2;255;0;0mtrue\x1b[0m');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: 'true', fgColor: 9, bold: false, underline: false, inverse: false },
+      { text: 'true', fgColor: '#ff0000', bold: false, italic: false, underline: false, inverse: false },
+    ]);
+  });
+
+  it('keeps true-color gray backgrounds exact (opencode panels and gradients)', async () => {
+    // opencode paints its screen rgb(10,10,10), panels rgb(30,30,30) and
+    // accents rgb(67,67,67); snapping those to the 256-color palette turned
+    // its smooth gray areas into hard-edged boxes.
+    const terminal = await createWrittenTerminal(
+      'a\x1b[48;2;30;30;30mpanel\x1b[48;2;67;67;67maccent\x1b[49m'
+    );
+    const snapshot = serializeTerminal(terminal);
+    expect(snapshot.rows[0]?.segments).toEqual([
+      { text: 'a', bold: false, italic: false, underline: false, inverse: false },
+      { text: 'panel', bgColor: '#1e1e1e', bold: false, italic: false, underline: false, inverse: false },
+      { text: 'accent', bgColor: '#434343', bold: false, italic: false, underline: false, inverse: false },
+    ]);
+  });
+
+  it('carries the italic flag on segments (opencode code keywords)', async () => {
+    const terminal = await createWrittenTerminal('\x1b[3mconst\x1b[23m x');
+    const snapshot = serializeTerminal(terminal);
+    expect(snapshot.rows[0]?.segments).toEqual([
+      { text: 'const', bold: false, italic: true, underline: false, inverse: false },
+      { text: ' x', bold: false, italic: false, underline: false, inverse: false },
     ]);
   });
 
@@ -75,7 +99,7 @@ describe('serializeTerminal', () => {
     const terminal = await createWrittenTerminal('┌─┐│');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: '┌─┐│', bold: false, underline: false, inverse: false },
+      { text: '┌─┐│', bold: false, italic: false, underline: false, inverse: false },
     ]);
   });
 
@@ -83,7 +107,7 @@ describe('serializeTerminal', () => {
     const terminal = await createWrittenTerminal('⏵⏵ bypass permissions on ✓');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: '▸▸ bypass permissions on √', bold: false, underline: false, inverse: false },
+      { text: '▸▸ bypass permissions on √', bold: false, italic: false, underline: false, inverse: false },
     ]);
   });
 
@@ -91,7 +115,7 @@ describe('serializeTerminal', () => {
     const terminal = await createWrittenTerminal('a你b');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: 'a你b', bold: false, underline: false, inverse: false },
+      { text: 'a你b', bold: false, italic: false, underline: false, inverse: false },
     ]);
     expect(snapshot.cursor).toEqual({ x: 4, y: 0 });
   });
@@ -100,7 +124,7 @@ describe('serializeTerminal', () => {
     const terminal = await createWrittenTerminal('ab  cd  ');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: 'ab  cd', bold: false, underline: false, inverse: false },
+      { text: 'ab  cd', bold: false, italic: false, underline: false, inverse: false },
     ]);
   });
 
@@ -108,8 +132,8 @@ describe('serializeTerminal', () => {
     const terminal = await createWrittenTerminal('x\x1b[7m \x1b[27m');
     const snapshot = serializeTerminal(terminal);
     expect(snapshot.rows[0]?.segments).toEqual([
-      { text: 'x', bold: false, underline: false, inverse: false },
-      { text: ' ', bold: false, underline: false, inverse: true },
+      { text: 'x', bold: false, italic: false, underline: false, inverse: false },
+      { text: ' ', bold: false, italic: false, underline: false, inverse: true },
     ]);
   });
 

@@ -12,6 +12,7 @@ export type TerminalEmulator = {
   readonly cols: number;
   readonly rows: number;
   readonly isMouseTrackingEnabled: boolean;
+  readonly isAlternateBuffer: boolean;
   snapshotRows(): TerminalSnapshot;
   reset(): void;
 };
@@ -50,6 +51,9 @@ export const createTerminalEmulator = (params: { cols: number; rows: number }): 
     },
     get isMouseTrackingEnabled() {
       return terminal.modes.mouseTrackingMode !== 'none';
+    },
+    get isAlternateBuffer() {
+      return terminal.buffer.active.type === 'alternate';
     },
     snapshotRows: () => {
       return serializeTerminal(terminal, scrollbackCache);

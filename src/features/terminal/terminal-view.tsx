@@ -18,7 +18,6 @@ import type {
   TerminalRowSelection,
 } from '@/features/terminal/terminal-selection';
 import { terminalViewUtil } from '@/features/terminal/terminal-view-util';
-import { terminalPaletteUtil } from '@/services/terminal/terminal-palette';
 import type { TerminalRowPiece } from '@/features/terminal/terminal-view-util';
 import type { StyledRow, StyledSegment, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 
@@ -54,13 +53,18 @@ type TerminalRowProps = TerminalFontProps & {
 };
 
 const segmentStyleOf = (segment: StyledSegment, font: TerminalFontProps): TextStyle => {
-  const foreground = segment.fgColor !== undefined ? terminalPaletteUtil.colorAt({ index: segment.fgColor }) : constant.terminal.fg;
-  const background = segment.bgColor !== undefined ? terminalPaletteUtil.colorAt({ index: segment.bgColor }) : constant.terminal.bg;
+  const foreground = segment.fgColor ?? constant.terminal.fg;
+  const background = segment.bgColor ?? constant.terminal.bg;
   return {
     backgroundColor: segment.inverse ? foreground : background,
     color: segment.inverse ? background : foreground,
+    // Bold comes from swapping to the 700 family only: also setting
+    // fontWeight '700' makes Android measure the span's leading whitespace
+    // with the fallback font's advance, shifting every following column left
+    // (the opencode logo's fragmented rows). Italic is likewise not applied:
+    // synthesizing it triggers the same collapse, so italic segments render
+    // upright until an italic font cut is bundled.
     fontFamily: segment.bold ? font.boldFontFamily : font.fontFamily,
-    fontWeight: segment.bold ? '700' : undefined,
     textDecorationLine: segment.underline ? 'underline' : 'none',
   };
 };
@@ -71,6 +75,7 @@ const isSameSegment = (a: StyledSegment, b: StyledSegment): boolean => {
     a.fgColor === b.fgColor &&
     a.bgColor === b.bgColor &&
     a.bold === b.bold &&
+    a.italic === b.italic &&
     a.underline === b.underline &&
     a.inverse === b.inverse
   );
@@ -146,7 +151,7 @@ const TerminalRow = memo(function TerminalRow({ cursorColumn, row, selection, ..
       {pieces.map((piece, index) => {
         return (
           <Text key={index} style={pieceStyleOf(piece, font)}>
-            {piece.segment.text}
+            {terminalViewUtil.toDisplayText(piece.segment.text)}
           </Text>
         );
       })}

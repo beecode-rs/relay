@@ -6,7 +6,7 @@ import type { StyledRow, TerminalSnapshot } from '@/services/terminal/terminal-s
 const rowOf = (...texts: string[]): StyledRow => {
   return {
     segments: texts.map((text) => {
-      return { bold: false, inverse: false, text, underline: false };
+      return { bold: false, inverse: false, italic: false, text, underline: false };
     }),
   };
 };

@@ -66,8 +66,8 @@ const SNAPSHOT: TerminalSnapshot = {
   rows: [
     {
       segments: [
-        { bold: false, inverse: false, text: 'hello ', underline: false },
-        { bold: false, fgColor: 1, inverse: false, text: 'red', underline: false },
+        { bold: false, inverse: false, italic: false, text: 'hello ', underline: false },
+        { bold: false, fgColor: '#cd0000', inverse: false, italic: false, text: 'red', underline: false },
       ],
     },
   ],

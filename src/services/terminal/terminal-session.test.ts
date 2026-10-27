@@ -783,6 +783,58 @@ describe('TerminalSession.focusTmuxSession', () => {
     ]);
   });
 
+  it('sends nothing while a foreground program owns the terminal', async () => {
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-detach=detached\n' });
+    await session.detachTmuxSession();
+    // The detach state can go stale while a TUI (opencode, vim, another tmux
+    // client) still reads the PTY; every TUI switches a terminal mode on.
+    bridge.emitData('\x1b[?1h');
+    await waitForEmulatorWrites();
+    const writtenAfterDetach = bridge.written.length;
+
+    const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
+
+    expect(wasFocused).toBe(false);
+    expect(bridge.written.slice(writtenAfterDetach)).toEqual([]);
+    expect(session.isRemoteScrollEnabled).toBe(false);
+  });
+
+  it('attaches in the shell again once the foreground program exits', async () => {
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-detach=detached\n' });
+    await session.detachTmuxSession();
+    bridge.emitData('\x1b[?1h\x1b[?1l');
+    await waitForEmulatorWrites();
+    const writtenAfterDetach = bridge.written.length;
+
+    const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
+
+    expect(wasFocused).toBe(true);
+    expect(bridge.written.slice(writtenAfterDetach)).toEqual([
+      ` ${tmuxAttachUtil.toAttachSessionCommand({ sessionName: 'work' })}\r`,
+    ]);
+  });
+
+  it('sends nothing after a detached outcome while a foreground program owns the terminal', async () => {
+    const harness = createHarness();
+    const { bridge, session } = harness;
+    await startWithTmuxAttached(harness);
+    const writtenAfterStart = bridge.written.length;
+    bridge.emitData('\x1b[?1000h');
+    await waitForEmulatorWrites();
+    bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-focus=detached\n' });
+
+    const wasFocused = await session.focusTmuxSession({ sessionName: 'work' });
+
+    expect(wasFocused).toBe(false);
+    expect(bridge.written.slice(writtenAfterStart)).toEqual([]);
+  });
+
   it('returns false without writing when the focus outcome is unknown', async () => {
     const harness = createHarness();
     const { bridge, session } = harness;
