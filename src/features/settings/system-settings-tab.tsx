@@ -11,6 +11,10 @@ import { UpdateSettingsSection } from '@/features/settings/update-settings-secti
 export const SystemSettingsTab = (): JSX.Element => {
   const { preference, savePreference } = useTerminalPreference();
 
+  const handleToggleKeyboardCompatibility = (nextValue: boolean): void => {
+    void savePreference({ ...preference, isKeyboardCompatibilityEnabled: nextValue });
+  };
+
   const handleToggleSelectionFollowFinger = (nextValue: boolean): void => {
     void savePreference({ ...preference, isSelectionFollowFingerEnabled: nextValue });
   };
@@ -22,6 +26,17 @@ export const SystemSettingsTab = (): JSX.Element => {
       </SettingsSection>
       <SettingsSection title="Terminal">
         <SettingsRow control={<TerminalFontSizeMenu />} description="Terminal text size" label="Font size" />
+        <SettingsRow
+          control={
+            <Switch
+              onValueChange={handleToggleKeyboardCompatibility}
+              testID="keyboard-compatibility-switch"
+              value={preference.isKeyboardCompatibilityEnabled}
+            />
+          }
+          description="Off sends raw keystrokes, ignoring autocorrect and predictive text. On lets your keyboard autocorrect what you type in the terminal"
+          label="Keyboard compatibility mode"
+        />
         <SettingsRow
           control={
             <Switch

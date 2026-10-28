@@ -3,9 +3,11 @@ import type { Resources } from '@expo/config-plugins/build/android';
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 const developmentNameSuffix = ' (dev)';
+const developmentIdSuffix = '.dev';
 const androidAppNameResource = 'app_name';
 const fallbackAppName = 'Relay';
 const fallbackAppSlug = 'relay';
+const fallbackAppBundleId = 'com.milos.becode.rs.relay';
 
 const isDevelopmentBuild = (): boolean => {
   return process.env.APP_VARIANT === 'dev' || process.env.APP_VARIANT === 'development';
@@ -21,6 +23,10 @@ const toAppSlug = (params: { config: ConfigContext['config'] }): string => {
 
 const toDevelopmentDisplayName = (params: { name: string }): string => {
   return `${params.name}${developmentNameSuffix}`;
+};
+
+const toDevelopmentAppBundleId = (params: { appBundleId?: string }): string => {
+  return `${params.appBundleId ?? fallbackAppBundleId}${developmentIdSuffix}`;
 };
 
 const toAppNameResourceItem = (params: { displayName: string }): Resources.ResourceItemXML => {
@@ -57,7 +63,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ...expoConfig,
       ios: {
         ...expoConfig.ios,
+        bundleIdentifier: toDevelopmentAppBundleId({ appBundleId: expoConfig.ios?.bundleIdentifier }),
         infoPlist: { ...expoConfig.ios?.infoPlist, CFBundleDisplayName: displayName },
+      },
+      android: {
+        ...expoConfig.android,
+        package: toDevelopmentAppBundleId({ appBundleId: expoConfig.android?.package }),
       },
     },
     displayName,

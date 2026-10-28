@@ -16,4 +16,4 @@ SSH runs entirely in the JS runtime — there is no native SSH code. The app use
 - `src/app-boot/boot.ts` installs `Buffer`, `process`, and `TextEncoder`/`TextDecoder` globals with Node-compat Buffer patches (imported from `src/app/_layout.tsx`).
 - `src/services/ssh/ssh2-shell-client.ts` opens an interactive `xterm-256color` PTY shell and implements the app's `SshTerminalPort` contract, including TOFU host-key verification (`SHA256:` fingerprints, known_hosts-format lines).
 
-Because `react-native-tcp-socket` and `react-native-quick-crypto` are native modules, the app requires a **development build** (`pnpm ios` / `pnpm android-rebuild && pnpm android-release`) — it cannot run in Expo Go.
+Because `react-native-tcp-socket` and `react-native-quick-crypto` are native modules, the app requires a **development build** (`pnpm android-setup` / `pnpm ios`) — it cannot run in Expo Go.

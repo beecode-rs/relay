@@ -43,5 +43,5 @@ Docs: https://docs.expo.dev/eas/index.md
 
 - Destructive UI actions (remove/delete) must ask the user to confirm before executing — e.g. `Alert.alert` with a cancel option and a destructive confirm button.
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
-- Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `pnpm ios` or `pnpm android-rebuild && pnpm android-release` locally, or `eas build --profile development`.
+- Expo Go only includes its bundled native modules. After adding a library with native code, rebuild the development build: `pnpm android-rebuild && pnpm android-setup` (Android) or `pnpm ios`. First-time setup is `pnpm android-setup`, or `eas build --profile development`. The `android-*` scripts are dev-only (debug variant, `Relay (dev)` app id); production builds use `build:android-release`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md

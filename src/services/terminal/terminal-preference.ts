@@ -4,6 +4,7 @@ export type FontSizeStepDirection = 'down' | 'up';
 
 export type TerminalPreference = {
   fontSize: TerminalFontSizeOption;
+  isKeyboardCompatibilityEnabled: boolean;
   isSelectionFollowFingerEnabled: boolean;
 };
 
@@ -14,5 +15,6 @@ export type TerminalPreferenceStorage = {
 
 export const DEFAULT_TERMINAL_PREFERENCE: TerminalPreference = {
   fontSize: 'm',
+  isKeyboardCompatibilityEnabled: false,
   isSelectionFollowFingerEnabled: false,
 };

@@ -1235,6 +1235,7 @@ export function TerminalScreen({
       <HiddenKeyboardInput
         armedModifier={armedModifier}
         inputRef={inputRef}
+        isKeyboardCompatibilityEnabled={preference.isKeyboardCompatibilityEnabled}
         onModifierUsed={handleModifierUsed}
         onWrite={handleWrite}
       />

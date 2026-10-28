@@ -2129,7 +2129,7 @@ describe('TerminalScreen font size preference', () => {
 
     await waitFor(() => {
       expect(terminalStorage.getWrites()).toEqual([
-        JSON.stringify({ fontSize: 'l', isSelectionFollowFingerEnabled: false }),
+        JSON.stringify({ fontSize: 'l', isKeyboardCompatibilityEnabled: false, isSelectionFollowFingerEnabled: false }),
       ]);
     });
     expect(StyleSheet.flatten(screen.getByTestId('terminal-probe').props.style).fontSize).toBe(16);

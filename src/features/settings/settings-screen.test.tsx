@@ -214,13 +214,15 @@ describe('SettingsScreen', () => {
     expect(router.back).toHaveBeenCalled();
   });
 
-  it('renders the terminal font size and selection rows', async () => {
+  it('renders the terminal preference rows', async () => {
     await renderScreen(createStorage());
 
     expect(screen.getByText('Terminal')).toBeTruthy();
     expect(screen.getByText('Font size')).toBeTruthy();
+    expect(screen.getByText('Keyboard compatibility mode')).toBeTruthy();
     expect(screen.getByText('Selection follows finger')).toBeTruthy();
     expect(screen.getByTestId('terminal-font-size-menu-anchor')).toBeTruthy();
+    expect(screen.getByTestId('keyboard-compatibility-switch')).toBeTruthy();
     expect(screen.getByTestId('selection-follow-finger-switch')).toBeTruthy();
   });
 
@@ -235,7 +237,22 @@ describe('SettingsScreen', () => {
     await fireEvent.press(screen.getByTestId('terminal-font-size-option-xl'));
 
     await waitFor(() => {
-      expect(terminalStorage.getWrites()).toEqual([JSON.stringify({ fontSize: 'xl', isSelectionFollowFingerEnabled: false })]);
+      expect(terminalStorage.getWrites()).toEqual([
+        JSON.stringify({ fontSize: 'xl', isKeyboardCompatibilityEnabled: false, isSelectionFollowFingerEnabled: false }),
+      ]);
+    });
+  });
+
+  it('persists turning on keyboard compatibility mode', async () => {
+    const terminalStorage = createTerminalStorage();
+    await renderScreen(createStorage(), terminalStorage);
+
+    await fireEvent(screen.getByTestId('keyboard-compatibility-switch'), 'valueChange', true);
+
+    await waitFor(() => {
+      expect(terminalStorage.getWrites()).toEqual([
+        JSON.stringify({ fontSize: 'm', isKeyboardCompatibilityEnabled: true, isSelectionFollowFingerEnabled: false }),
+      ]);
     });
   });
 
@@ -247,7 +264,7 @@ describe('SettingsScreen', () => {
 
     await waitFor(() => {
       expect(terminalStorage.getWrites()).toEqual([
-        JSON.stringify({ fontSize: 'm', isSelectionFollowFingerEnabled: true }),
+        JSON.stringify({ fontSize: 'm', isKeyboardCompatibilityEnabled: false, isSelectionFollowFingerEnabled: true }),
       ]);
     });
   });

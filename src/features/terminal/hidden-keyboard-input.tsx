@@ -14,9 +14,15 @@ const RETURN_KEY_TYPE = Platform.select({
   default: 'default',
 } as const);
 
+const KEYBOARD_TYPE = Platform.select({
+  android: 'visible-password',
+  default: undefined,
+} as const);
+
 export type HiddenKeyboardInputProps = {
   armedModifier: TerminalModifierName | null;
   inputRef?: RefObject<TerminalInputRef | null>;
+  isKeyboardCompatibilityEnabled?: boolean;
   onModifierUsed(): void;
   onWrite(sequence: string): void;
 };
@@ -34,6 +40,7 @@ const diffAgainstSentinel = (next: string): SentinelDiff => {
 export function HiddenKeyboardInput({
   armedModifier,
   inputRef,
+  isKeyboardCompatibilityEnabled,
   onModifierUsed,
   onWrite,
 }: HiddenKeyboardInputProps) {
@@ -63,15 +70,18 @@ export function HiddenKeyboardInput({
   return (
     <TextInput
       autoCapitalize="none"
-      autoCorrect={false}
+      autoCorrect={isKeyboardCompatibilityEnabled === true}
       caretHidden
       contextMenuHidden
+      importantForAutofill={isKeyboardCompatibilityEnabled === true ? undefined : 'no'}
+      key={isKeyboardCompatibilityEnabled === true ? 'keyboard-autocorrect' : 'keyboard-raw'}
+      keyboardType={isKeyboardCompatibilityEnabled === true ? undefined : KEYBOARD_TYPE}
       multiline
       onChangeText={handleChangeText}
       onSubmitEditing={handleSubmitEditing}
       ref={inputRef}
       returnKeyType={RETURN_KEY_TYPE}
-      spellCheck={false}
+      spellCheck={isKeyboardCompatibilityEnabled === true}
       submitBehavior="newline"
       style={styles.input}
       value={constant.keyboard.sentinel}

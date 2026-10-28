@@ -25,6 +25,9 @@ export class TerminalPreferenceService {
     }
     return {
       fontSize: this._parseFontSize({ value: storedValue.fontSize }),
+      isKeyboardCompatibilityEnabled: this._parseIsKeyboardCompatibilityEnabled({
+        value: storedValue.isKeyboardCompatibilityEnabled,
+      }),
       isSelectionFollowFingerEnabled: this._parseIsSelectionFollowFingerEnabled({
         value: storedValue.isSelectionFollowFingerEnabled,
       }),
@@ -75,6 +78,14 @@ export class TerminalPreferenceService {
       default:
         return DEFAULT_TERMINAL_PREFERENCE.fontSize;
     }
+  }
+
+  protected _parseIsKeyboardCompatibilityEnabled(params: { value: unknown }): boolean {
+    if (typeof params.value === 'boolean') {
+      return params.value;
+    }
+
+    return DEFAULT_TERMINAL_PREFERENCE.isKeyboardCompatibilityEnabled;
   }
 
   protected _parseIsSelectionFollowFingerEnabled(params: { value: unknown }): boolean {

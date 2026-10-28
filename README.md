@@ -108,7 +108,7 @@ Requires [Node.js](https://nodejs.org) and [pnpm](https://pnpm.io).
 git clone https://github.com/beecode-rs/relay.git
 cd relay
 pnpm install
-pnpm android-rebuild && pnpm android-release
+pnpm android-setup
 ```
 
 Relay's SSH stack uses native modules, so it needs a development build on a device or emulator — it cannot run in Expo Go. The full development setup lives in [resource/docs/development.md](resource/docs/development.md).

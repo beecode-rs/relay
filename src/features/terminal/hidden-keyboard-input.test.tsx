@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
+import { Platform } from 'react-native';
 
 import { constant } from '@/constants/constant';
 import { HiddenKeyboardInput } from '@/features/terminal/hidden-keyboard-input';
@@ -61,6 +62,30 @@ describe('HiddenKeyboardInput', () => {
     expect(input().props.multiline).toBe(true);
     expect(input().props.submitBehavior).toBe('newline');
     expect(['none', 'default']).toContain(input().props.returnKeyType);
+  });
+
+  it('ignores autocorrect by default', async () => {
+    await renderInput();
+    expect(input().props.autoCorrect).toBe(false);
+    expect(input().props.spellCheck).toBe(false);
+    expect(input().props.keyboardType).toBe(Platform.OS === 'android' ? 'visible-password' : undefined);
+    expect(input().props.importantForAutofill).toBe('no');
+  });
+
+  it('ignores autocorrect when compatibility mode is off', async () => {
+    await renderInput({ isKeyboardCompatibilityEnabled: false });
+    expect(input().props.autoCorrect).toBe(false);
+    expect(input().props.spellCheck).toBe(false);
+    expect(input().props.keyboardType).toBe(Platform.OS === 'android' ? 'visible-password' : undefined);
+    expect(input().props.importantForAutofill).toBe('no');
+  });
+
+  it('enables autocorrect in keyboard compatibility mode', async () => {
+    await renderInput({ isKeyboardCompatibilityEnabled: true });
+    expect(input().props.autoCorrect).toBe(true);
+    expect(input().props.spellCheck).toBe(true);
+    expect(input().props.keyboardType).toBeUndefined();
+    expect(input().props.importantForAutofill).toBeUndefined();
   });
 
   it('writes carriage return on submit', async () => {

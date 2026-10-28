@@ -31,6 +31,7 @@ describe('TerminalPreferenceService', () => {
         })
       ).toEqual({
         fontSize: 'l',
+        isKeyboardCompatibilityEnabled: false,
         isSelectionFollowFingerEnabled: true,
       });
     });
@@ -38,6 +39,7 @@ describe('TerminalPreferenceService', () => {
     it.each([null, '', 'not json', '42', '[]', '"m"'])('falls back to the defaults for %p', (value) => {
       expect(service.parsePreference({ value })).toEqual({
         fontSize: 'm',
+        isKeyboardCompatibilityEnabled: false,
         isSelectionFollowFingerEnabled: false,
       });
     });
@@ -45,6 +47,7 @@ describe('TerminalPreferenceService', () => {
     it('keeps the relative selection mode when the stored toggle is missing', () => {
       expect(service.parsePreference({ value: '{"fontSize":"s"}' })).toEqual({
         fontSize: 's',
+        isKeyboardCompatibilityEnabled: false,
         isSelectionFollowFingerEnabled: false,
       });
     });
@@ -52,6 +55,23 @@ describe('TerminalPreferenceService', () => {
     it('falls back to the relative selection mode for a non-boolean toggle', () => {
       expect(service.parsePreference({ value: '{"isSelectionFollowFingerEnabled":"yes"}' })).toEqual({
         fontSize: 'm',
+        isKeyboardCompatibilityEnabled: false,
+        isSelectionFollowFingerEnabled: false,
+      });
+    });
+
+    it('parses a stored keyboard compatibility toggle', () => {
+      expect(service.parsePreference({ value: '{"isKeyboardCompatibilityEnabled":true}' })).toEqual({
+        fontSize: 'm',
+        isKeyboardCompatibilityEnabled: true,
+        isSelectionFollowFingerEnabled: false,
+      });
+    });
+
+    it('falls back to the keyboard compatibility default for a non-boolean toggle', () => {
+      expect(service.parsePreference({ value: '{"isKeyboardCompatibilityEnabled":"true"}' })).toEqual({
+        fontSize: 'm',
+        isKeyboardCompatibilityEnabled: false,
         isSelectionFollowFingerEnabled: false,
       });
     });
@@ -59,6 +79,7 @@ describe('TerminalPreferenceService', () => {
     it('falls back to the default font size for an unknown option', () => {
       expect(service.parsePreference({ value: '{"fontSize":"huge"}' })).toEqual({
         fontSize: 'm',
+        isKeyboardCompatibilityEnabled: false,
         isSelectionFollowFingerEnabled: false,
       });
     });
@@ -99,9 +120,17 @@ describe('TerminalPreferenceService', () => {
     it('serializes the preference as stored json', () => {
       expect(
         service.serializePreference({
-          preference: { fontSize: 'xl', isSelectionFollowFingerEnabled: true },
+          preference: { fontSize: 'xl', isKeyboardCompatibilityEnabled: false, isSelectionFollowFingerEnabled: true },
         })
-      ).toBe('{"fontSize":"xl","isSelectionFollowFingerEnabled":true}');
+      ).toBe('{"fontSize":"xl","isKeyboardCompatibilityEnabled":false,"isSelectionFollowFingerEnabled":true}');
+    });
+
+    it('round-trips a stored keyboard compatibility toggle through parse and serialize', () => {
+      const parsed = service.parsePreference({ value: '{"isKeyboardCompatibilityEnabled":true}' });
+
+      expect(service.serializePreference({ preference: parsed })).toBe(
+        '{"fontSize":"m","isKeyboardCompatibilityEnabled":true,"isSelectionFollowFingerEnabled":false}',
+      );
     });
   });
 
@@ -111,12 +140,13 @@ describe('TerminalPreferenceService', () => {
         service.loadPreference({
           storage: createStorage('{"fontSize":"s","isSelectionFollowFingerEnabled":true}'),
         }),
-      ).resolves.toEqual({ fontSize: 's', isSelectionFollowFingerEnabled: true });
+      ).resolves.toEqual({ fontSize: 's', isKeyboardCompatibilityEnabled: false, isSelectionFollowFingerEnabled: true });
     });
 
     it('defaults when nothing is persisted', async () => {
       await expect(service.loadPreference({ storage: createStorage(null) })).resolves.toEqual({
         fontSize: 'm',
+        isKeyboardCompatibilityEnabled: false,
         isSelectionFollowFingerEnabled: false,
       });
     });
@@ -127,12 +157,12 @@ describe('TerminalPreferenceService', () => {
       const storage = createStorage();
 
       await service.savePreference({
-        preference: { fontSize: 'l', isSelectionFollowFingerEnabled: false },
+        preference: { fontSize: 'l', isKeyboardCompatibilityEnabled: false, isSelectionFollowFingerEnabled: false },
         storage,
       });
 
       expect(storage.getWrites()).toEqual([
-        '{"fontSize":"l","isSelectionFollowFingerEnabled":false}',
+        '{"fontSize":"l","isKeyboardCompatibilityEnabled":false,"isSelectionFollowFingerEnabled":false}',
       ]);
     });
   });
