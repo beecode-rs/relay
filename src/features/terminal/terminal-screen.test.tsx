@@ -399,6 +399,25 @@ const keyboardShowEvent = (height: number): KeyboardEvent => {
   } as unknown as KeyboardEvent;
 };
 
+const createTerminalStorage = (initialValue: string | null = null) => {
+  const state = { value: initialValue };
+  const writes: string[] = [];
+  const storage: TerminalPreferenceStorage & { getWrites(): string[] } = {
+    async readPreference() {
+      return state.value;
+    },
+    async writePreference(params) {
+      state.value = params.value;
+      writes.push(params.value);
+    },
+    getWrites() {
+      return writes;
+    },
+  };
+
+  return storage;
+};
+
 const openNewSessionPrompt = async (): Promise<void> => {
   await fireEvent.press(screen.getByLabelText('Instance actions for example.com'));
   await fireEvent.press(screen.getByLabelText('New session on example.com'));
@@ -2029,25 +2048,6 @@ describe('TerminalScreen font size preference', () => {
     };
   };
 
-  const createTerminalStorage = (initialValue: string | null = null) => {
-    const state = { value: initialValue };
-    const writes: string[] = [];
-    const storage: TerminalPreferenceStorage & { getWrites(): string[] } = {
-      async readPreference() {
-        return state.value;
-      },
-      async writePreference(params) {
-        state.value = params.value;
-        writes.push(params.value);
-      },
-      getWrites() {
-        return writes;
-      },
-    };
-
-    return storage;
-  };
-
   it('renders the persisted font size on the terminal probe', async () => {
     const session = createFakeSession('connected', CONNECT_OPTIONS);
     await render(
@@ -2133,6 +2133,63 @@ describe('TerminalScreen font size preference', () => {
       ]);
     });
     expect(StyleSheet.flatten(screen.getByTestId('terminal-probe').props.style).fontSize).toBe(16);
+  });
+});
+
+describe('TerminalScreen keyboard compatibility mode', () => {
+  const renderScreenWithPreference = async (session: FakeSession, storedPreference: string) => {
+    await render(
+      <TerminalPreferenceProvider storage={createTerminalStorage(storedPreference)}>
+        <TerminalScreen
+          activeServerStore={createActiveServerStore().store}
+          listProfiles={async () => {
+            return [toProfileOf(CONNECT_OPTIONS)];
+          }}
+          loadConnectOptions={createLoaderWith(CONNECT_OPTIONS)}
+          registry={createFakeRegistry(session)}
+        />
+      </TerminalPreferenceProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText('red')).toBeTruthy();
+    });
+  };
+
+  it('buffers words and flushes them before extra-key writes', async () => {
+    const session = createFakeSession('connected', CONNECT_OPTIONS);
+    await renderScreenWithPreference(session, '{"isKeyboardCompatibilityEnabled":true}');
+
+    const keyboardInput = screen.getByDisplayValue(constant.keyboard.sentinel);
+    await fireEvent.changeText(keyboardInput, `${constant.keyboard.sentinel}gi`);
+    expect(session.writes).toEqual([]);
+    // The buffered word shows underlined at the caret until it flushes.
+    await waitFor(() => {
+      expect(screen.getByText('gi').props.style.textDecorationLine).toBe('underline');
+    });
+
+    await fireEvent.press(screen.getByRole('button', { name: '↑' }));
+    expect(session.writes).toEqual(['gi', '\x1b[A']);
+    await waitFor(() => {
+      expect(screen.queryByText('gi')).toBeNull();
+    });
+
+    await fireEvent.changeText(
+      screen.getByDisplayValue(`${constant.keyboard.sentinel}gi`),
+      `${constant.keyboard.sentinel}git `,
+    );
+    expect(session.writes).toEqual(['gi', '\x1b[A', 't ']);
+    expect(screen.queryByText('t')).toBeNull();
+  });
+
+  it('writes each character immediately when compatibility mode is off', async () => {
+    const session = createFakeSession('connected', CONNECT_OPTIONS);
+    await renderScreenWithPreference(session, '{"isKeyboardCompatibilityEnabled":false}');
+
+    await fireEvent.changeText(
+      screen.getByDisplayValue(constant.keyboard.sentinel),
+      `${constant.keyboard.sentinel}gi`,
+    );
+    expect(session.writes).toEqual(['gi']);
   });
 });
 

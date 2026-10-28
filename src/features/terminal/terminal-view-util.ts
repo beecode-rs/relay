@@ -140,6 +140,55 @@ export const terminalViewUtil = {
     });
   },
 
+  // The composing word is preview-only display: splice it into the row at the
+  // given column as an underlined segment, shifting the rest of the line right
+  // to where the flushed keystrokes will land. The session never sees it.
+  splitRowForComposition(params: { column: number; row: StyledRow; text: string }): StyledSegment[] {
+    const { column, row, text } = params;
+    const composedSegment: StyledSegment = {
+      bold: false,
+      inverse: false,
+      italic: false,
+      text,
+      underline: true,
+    };
+    const columnEnds = this._columnEndsOf(row.segments);
+    const hitIndex = row.segments.findIndex((_segment, segmentIndex) => {
+      return column < columnEnds[segmentIndex];
+    });
+    const appendBeyondRowEnd = () => {
+      const rowEndColumn = columnEnds[columnEnds.length - 1] ?? 0;
+      return [
+        ...row.segments,
+        ...this._blankSegments({ columnCount: Math.max(0, column - rowEndColumn) }),
+        composedSegment,
+      ];
+    };
+    if (hitIndex === -1) {
+      return appendBeyondRowEnd();
+    }
+    const segment = row.segments[hitIndex];
+    const segmentStartColumn = columnEnds[hitIndex] - terminalUnicodeWidthUtil.widthOf(segment.text);
+    const graphemes = terminalUnicodeWidthUtil.toGraphemes(segment.text);
+    const hitGrapheme = graphemes.find((grapheme) => {
+      return column - segmentStartColumn < grapheme.column + grapheme.width;
+    });
+    if (hitGrapheme === undefined) {
+      return appendBeyondRowEnd();
+    }
+    // Insertion splits before the grapheme holding the column, so the tail
+    // keeps that grapheme; a column landing mid-grapheme (inside a wide
+    // emoji) pushes the preview after the whole cluster rather than cutting it.
+    const head = { ...segment, text: segment.text.slice(0, hitGrapheme.start) };
+    const tail = { ...segment, text: segment.text.slice(hitGrapheme.start) };
+
+    return [
+      ...this._nonEmptySegments([...row.segments.slice(0, hitIndex), head]),
+      composedSegment,
+      ...this._nonEmptySegments([tail, ...row.segments.slice(hitIndex + 1)]),
+    ];
+  },
+
   splitRowForCursor(params: { cursorColumn: number; row: StyledRow }): StyledSegment[] {
     const { cursorColumn, row } = params;
     const columnEnds = this._columnEndsOf(row.segments);

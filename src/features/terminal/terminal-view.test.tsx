@@ -173,6 +173,53 @@ describe('TerminalView', () => {
     expect(screen.getByText('red').props.style.backgroundColor).toBe(constant.terminal.bg);
   });
 
+  it('previews the composing word underlined at the caret and rides the caret at its end', async () => {
+    await render(
+      <TerminalView composedText="sta" isCursorVisible snapshot={buildSnapshot({ x: 6, y: 0 })} {...FONT} />
+    );
+    const composed = screen.getByText('sta');
+    expect(composed.props.style.textDecorationLine).toBe('underline');
+    // The rest of the line stays intact behind the preview.
+    expect(screen.getByText('hello ')).toBeTruthy();
+    // The caret moves to the column after the preview, inverting the 'r' that
+    // used to sit at the caret column (the caret keeps the segment's own fg).
+    expect(screen.getByText('r').props.style.backgroundColor).toBe('#cd0000');
+    expect(screen.getByText('r').props.style.color).toBe(constant.terminal.bg);
+    expect(screen.getByText('ed').props.style.backgroundColor).toBe(constant.terminal.bg);
+  });
+
+  it('previews the composing word while the caret is hidden', async () => {
+    await render(
+      <TerminalView composedText="sta" isCursorVisible={false} snapshot={buildSnapshot({ x: 6, y: 0 })} {...FONT} />
+    );
+    expect(screen.getByText('sta').props.style.textDecorationLine).toBe('underline');
+    expect(screen.getByText('red').props.style.backgroundColor).toBe(constant.terminal.bg);
+  });
+
+  it('drops the composing preview once the text clears', async () => {
+    const view = await render(
+      <TerminalView composedText="sta" isCursorVisible snapshot={buildSnapshot({ x: 6, y: 0 })} {...FONT} />
+    );
+    expect(screen.getByText('sta')).toBeTruthy();
+    await view.rerender(
+      <TerminalView composedText={null} isCursorVisible snapshot={buildSnapshot({ x: 6, y: 0 })} {...FONT} />
+    );
+    expect(screen.queryByText('sta')).toBeNull();
+    // The row returns to its plain caret split at the original column.
+    expect(screen.getByText('ed').props.style.backgroundColor).toBe(constant.terminal.bg);
+  });
+
+  it('limits the composing preview to the cursor row', async () => {
+    await render(
+      <TerminalView composedText="sta" isCursorVisible snapshot={buildSnapshot({ x: 6, y: 1 })} {...FONT} />
+    );
+    // Row 1 is the cursor row: the preview splices in before its trailing 'u'.
+    expect(screen.getByText('sta').props.style.textDecorationLine).toBe('underline');
+    expect(screen.getByText('plain ')).toBeTruthy();
+    // Row 0 is untouched: its 'red' segment is not split by a preview insert.
+    expect(screen.getByText('red').props.style.backgroundColor).toBe(constant.terminal.bg);
+  });
+
   it('pads the gap so the cursor block renders on its column beyond the row content', async () => {
     const view = await render(
       <TerminalView isCursorVisible snapshot={buildSnapshot({ x: 15, y: 1 })} {...FONT} />

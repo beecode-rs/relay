@@ -1,31 +1,40 @@
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import type { RefObject } from 'react';
 import { Platform } from 'react-native';
 
 import { constant } from '@/constants/constant';
 import { HiddenKeyboardInput } from '@/features/terminal/hidden-keyboard-input';
-import type { HiddenKeyboardInputProps } from '@/features/terminal/hidden-keyboard-input';
+import type { HiddenKeyboardInputProps, TerminalKeyboardBuffer } from '@/features/terminal/hidden-keyboard-input';
 
 type MountedInput = {
   onModifierUsed: jest.Mock;
   onWrite: jest.Mock;
+  rerenderInput(props: Partial<HiddenKeyboardInputProps>): Promise<void>;
 };
 
 const renderInput = async (props: Partial<HiddenKeyboardInputProps> = {}): Promise<MountedInput> => {
   const onModifierUsed = jest.fn();
   const onWrite = jest.fn();
-  await render(
+  const elementFor = (next: Partial<HiddenKeyboardInputProps>) => (
     <HiddenKeyboardInput
       armedModifier={null}
       onModifierUsed={onModifierUsed}
       onWrite={onWrite}
-      {...props}
+      {...next}
     />
   );
-  return { onModifierUsed, onWrite };
+  const renderResult = await render(elementFor(props));
+  return {
+    onModifierUsed,
+    onWrite,
+    rerenderInput: async (next: Partial<HiddenKeyboardInputProps>) => {
+      await renderResult.rerender(elementFor({ ...props, ...next }));
+    },
+  };
 };
 
-const input = () => {
-  return screen.getByDisplayValue(constant.keyboard.sentinel);
+const input = (value: string = constant.keyboard.sentinel) => {
+  return screen.getByDisplayValue(value);
 };
 
 describe('HiddenKeyboardInput', () => {
@@ -127,5 +136,179 @@ describe('HiddenKeyboardInput', () => {
     expect(style.fontSize).toBe(1);
     expect(style.height).toBe(1);
     expect(style.paddingVertical).toBe(0);
+  });
+
+  describe('compatibility mode word buffer', () => {
+    it('keeps the word being typed in the field instead of writing it', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      expect(onWrite).not.toHaveBeenCalled();
+      expect(input(`${constant.keyboard.sentinel}gi`).props.value).toBe(`${constant.keyboard.sentinel}gi`);
+    });
+
+    it('writes the word once a space completes it and keeps the field verbatim', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}git `);
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(onWrite).toHaveBeenCalledWith('git ');
+      // The completed word stays in the field: shrinking it programmatically
+      // is what ends an active dictation session.
+      expect(input(`${constant.keyboard.sentinel}git `).props.value).toBe(`${constant.keyboard.sentinel}git `);
+    });
+
+    it('keeps only the trailing word pending after a completed word', async () => {
+      const onDraftChange = jest.fn();
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true, onDraftChange });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}git sta`);
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(onWrite).toHaveBeenCalledWith('git ');
+      expect(input(`${constant.keyboard.sentinel}git sta`).props.value).toBe(
+        `${constant.keyboard.sentinel}git sta`
+      );
+      expect(onDraftChange).toHaveBeenLastCalledWith('sta');
+    });
+
+    it('writes a suggestion replacement when the keyboard completes the word', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}helo`);
+      expect(onWrite).not.toHaveBeenCalled();
+      // Suggestion taps land as the corrected word plus a trailing space.
+      await fireEvent.changeText(input(`${constant.keyboard.sentinel}helo`), `${constant.keyboard.sentinel}hello `);
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(onWrite).toHaveBeenCalledWith('hello ');
+    });
+
+    it('keeps a dictated phrase flowing by echoing interim text verbatim', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}hello `);
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(onWrite).toHaveBeenLastCalledWith('hello ');
+      expect(input(`${constant.keyboard.sentinel}hello `).props.value).toBe(
+        `${constant.keyboard.sentinel}hello `
+      );
+
+      await fireEvent.changeText(
+        input(`${constant.keyboard.sentinel}hello `),
+        `${constant.keyboard.sentinel}hello world`
+      );
+      // The trailing word stays pending until its delimiter arrives.
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(input(`${constant.keyboard.sentinel}hello world`).props.value).toBe(
+        `${constant.keyboard.sentinel}hello world`
+      );
+
+      await fireEvent.changeText(
+        input(`${constant.keyboard.sentinel}hello world`),
+        `${constant.keyboard.sentinel}hello world `
+      );
+      expect(onWrite).toHaveBeenCalledTimes(2);
+      expect(onWrite).toHaveBeenLastCalledWith('world ');
+    });
+
+    it('erases already-sent text when a rewrite shortens the phrase', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}abcd `);
+      expect(onWrite).toHaveBeenCalledWith('abcd ');
+      await fireEvent.changeText(input(`${constant.keyboard.sentinel}abcd `), `${constant.keyboard.sentinel}ab`);
+      expect(onWrite).toHaveBeenLastCalledWith('\x7f\x7f\x7f');
+    });
+
+    it('corrects already-sent words when dictation rewrites the phrase', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      // A dictated phrase lands as one batched change and flushes in one write.
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}hello world `);
+      expect(onWrite.mock.calls).toEqual([['hello world ']]);
+      // The dictation finalization rewrites the phrase with punctuation.
+      await fireEvent.changeText(
+        input(`${constant.keyboard.sentinel}hello world `),
+        `${constant.keyboard.sentinel}hello, world `
+      );
+      expect(onWrite.mock.calls.slice(1)).toEqual([['\x7f'.repeat(7)], [', world ']]);
+    });
+
+    it('does not write when backspacing inside the buffered word', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      await fireEvent.changeText(input(`${constant.keyboard.sentinel}gi`), `${constant.keyboard.sentinel}g`);
+      await fireEvent.changeText(input(`${constant.keyboard.sentinel}g`), constant.keyboard.sentinel);
+      expect(onWrite).not.toHaveBeenCalled();
+      await fireEvent.changeText(input(), '');
+      expect(onWrite).toHaveBeenCalledWith('\x7f');
+    });
+
+    it('maps buffered newlines to carriage returns when the word flushes', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}git\n`);
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(onWrite).toHaveBeenCalledWith('git\r');
+    });
+
+    it('flushes the buffered word before the submit carriage return', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      await fireEvent(input(`${constant.keyboard.sentinel}gi`), 'submitEditing');
+      expect(onWrite.mock.calls).toEqual([['gi'], ['\r']]);
+      // The return key is the one moment the field may shrink again.
+      expect(input().props.value).toBe(constant.keyboard.sentinel);
+    });
+
+    it('flushes the buffered word when a modifier is armed', async () => {
+      const mounted = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      await mounted.rerenderInput({ armedModifier: 'ctrl' });
+      expect(mounted.onWrite).toHaveBeenCalledWith('gi');
+      // The field keeps its text so an active dictation session survives.
+      expect(input(`${constant.keyboard.sentinel}gi`).props.value).toBe(`${constant.keyboard.sentinel}gi`);
+    });
+
+    it('writes modifier chords immediately without buffering', async () => {
+      const { onModifierUsed, onWrite } = await renderInput({
+        armedModifier: 'ctrl',
+        isKeyboardCompatibilityEnabled: true,
+      });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}c`);
+      expect(onWrite).toHaveBeenCalledWith('\x03');
+      expect(onModifierUsed).toHaveBeenCalledTimes(1);
+      expect(input(`${constant.keyboard.sentinel}c`).props.value).toBe(`${constant.keyboard.sentinel}c`);
+    });
+
+    it('flushes the buffered word through the exposed buffer handle', async () => {
+      const bufferRef: RefObject<TerminalKeyboardBuffer | null> = { current: null };
+      const { onWrite } = await renderInput({ bufferRef, isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      await act(async () => {
+        bufferRef.current?.flush();
+      });
+      expect(onWrite).toHaveBeenCalledTimes(1);
+      expect(onWrite).toHaveBeenCalledWith('gi');
+      expect(input(`${constant.keyboard.sentinel}gi`).props.value).toBe(`${constant.keyboard.sentinel}gi`);
+      await act(async () => {
+        bufferRef.current?.flush();
+      });
+      expect(onWrite).toHaveBeenCalledTimes(1);
+    });
+
+    it('flushes the buffered word when compatibility mode turns off', async () => {
+      const mounted = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      await mounted.rerenderInput({ isKeyboardCompatibilityEnabled: false });
+      expect(mounted.onWrite).toHaveBeenCalledWith('gi');
+    });
+
+    it('replaces typographic autocorrect characters with ASCII equivalents', async () => {
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}don\u2019t\u00a0`);
+      expect(onWrite).toHaveBeenCalledWith("don't ");
+    });
+
+    it('reports draft changes so the screen can preview the buffered word', async () => {
+      const onDraftChange = jest.fn();
+      const { onWrite } = await renderInput({ isKeyboardCompatibilityEnabled: true, onDraftChange });
+      await fireEvent.changeText(input(), `${constant.keyboard.sentinel}gi`);
+      expect(onDraftChange).toHaveBeenLastCalledWith('gi');
+      await fireEvent.changeText(input(`${constant.keyboard.sentinel}gi`), `${constant.keyboard.sentinel}git `);
+      expect(onWrite).toHaveBeenCalledWith('git ');
+      expect(onDraftChange).toHaveBeenLastCalledWith('');
+    });
   });
 });

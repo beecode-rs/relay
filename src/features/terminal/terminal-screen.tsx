@@ -26,7 +26,7 @@ import { useOptionalTerminalPreference } from '@/components/terminal-preference-
 import { charMetrics } from '@/features/terminal/char-metrics';
 import { ExtraKeysRow } from '@/features/terminal/extra-keys-row';
 import { HiddenKeyboardInput } from '@/features/terminal/hidden-keyboard-input';
-import type { TerminalInputRef } from '@/features/terminal/hidden-keyboard-input';
+import type { TerminalInputRef, TerminalKeyboardBuffer } from '@/features/terminal/hidden-keyboard-input';
 import type { TerminalModifierName } from '@/features/terminal/modifier-input';
 import { ServersDrawer } from '@/features/terminal/servers-drawer';
 import type { ServersDrawerServer } from '@/features/terminal/servers-drawer';
@@ -305,7 +305,9 @@ export function TerminalScreen({
   const [availableSize, setAvailableSize] = useState<TerminalAreaSize | null>(null);
   const [probeMetrics, setProbeMetrics] = useState<ProbeMetrics | null>(null);
   const [followRequestCount, setFollowRequestCount] = useState(0);
+  const [keyboardDraft, setKeyboardDraft] = useState('');
   const inputRef = useRef<TerminalInputRef | null>(null);
+  const keyboardBufferRef = useRef<TerminalKeyboardBuffer | null>(null);
   const shownTmuxPromptRef = useRef<TmuxPrompt | null>(null);
   const safeAreaInsets = useSafeAreaInsets();
   const windowDimensions = useWindowDimensions();
@@ -566,6 +568,13 @@ export function TerminalScreen({
       return count + 1;
     });
     activeSession?.write(sequence);
+  };
+
+  const handleExtraKeysWrite = (sequence: string) => {
+    // Extra keys bypass the hidden input, so flush any compatibility-mode word
+    // buffer first: typing `gi` then Tab must reach the terminal as `gi` + Tab.
+    keyboardBufferRef.current?.flush();
+    handleWrite(sequence);
   };
 
   const handleFontSizeStep = useCallback(
@@ -1178,6 +1187,7 @@ export function TerminalScreen({
             <TerminalView
               boldFontFamily={boldFontFamily}
               charWidthPx={charWidthPx}
+              composedText={keyboardDraft === '' ? null : keyboardDraft}
               onSurfaceLayout={handleViewportLayout}
               followRequestCount={followRequestCount}
               fontFamily={fontFamily}
@@ -1228,14 +1238,16 @@ export function TerminalScreen({
           onSelectionMarkerTap={terminalSelection.setActiveMarker}
           onSelectionToggle={handleSelectionToggle}
           onToggleKeyboard={handleToggleKeyboard}
-          onWrite={handleWrite}
+          onWrite={handleExtraKeysWrite}
           selection={terminalSelection.selection}
         />
       </View>
       <HiddenKeyboardInput
         armedModifier={armedModifier}
+        bufferRef={keyboardBufferRef}
         inputRef={inputRef}
         isKeyboardCompatibilityEnabled={preference.isKeyboardCompatibilityEnabled}
+        onDraftChange={setKeyboardDraft}
         onModifierUsed={handleModifierUsed}
         onWrite={handleWrite}
       />

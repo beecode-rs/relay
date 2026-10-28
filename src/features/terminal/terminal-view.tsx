@@ -19,6 +19,7 @@ import type {
 } from '@/features/terminal/terminal-selection';
 import { terminalViewUtil } from '@/features/terminal/terminal-view-util';
 import type { TerminalRowPiece } from '@/features/terminal/terminal-view-util';
+import { terminalUnicodeWidthUtil } from '@/services/terminal/terminal-unicode-provider';
 import type { StyledRow, StyledSegment, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 
 export type TerminalFontProps = {
@@ -32,6 +33,7 @@ export type TerminalSelectionMoveMode = 'follow' | 'relative';
 
 export type TerminalViewProps = TerminalFontProps & {
   charWidthPx?: number;
+  composedText?: string | null;
   followRequestCount?: number;
   isCursorVisible: boolean;
   isRemoteScrollEnabled?: boolean;
@@ -47,6 +49,8 @@ export type TerminalViewProps = TerminalFontProps & {
 };
 
 type TerminalRowProps = TerminalFontProps & {
+  composedColumn: number | null;
+  composedText: string | null;
   cursorColumn: number | null;
   row: StyledRow;
   selection: TerminalRowSelection | null;
@@ -106,6 +110,8 @@ const areTerminalRowPropsEqual = (previous: TerminalRowProps, next: TerminalRowP
   if (
     !isFontUnchanged ||
     previous.cursorColumn !== next.cursorColumn ||
+    previous.composedColumn !== next.composedColumn ||
+    previous.composedText !== next.composedText ||
     !isSameRowSelection(previous.selection, next.selection)
   ) {
     return false;
@@ -126,9 +132,39 @@ const pieceStyleOf = (piece: TerminalRowPiece, font: TerminalFontProps): TextSty
   return { ...base, backgroundColor: piece.backgroundColor };
 };
 
-const TerminalRow = memo(function TerminalRow({ cursorColumn, row, selection, ...font }: TerminalRowProps) {
+const TerminalRow = memo(function TerminalRow({
+  composedColumn,
+  composedText,
+  cursorColumn,
+  row,
+  selection,
+  ...font
+}: TerminalRowProps) {
+  // The composing word is preview-only: splice it in underlined at the caret
+  // column so the buffered text shows where the flushed keystrokes will land.
+  const isComposing = composedColumn !== null && composedText !== null && composedText.length > 0;
+  const composedRow: StyledRow = isComposing
+    ? {
+        ...row,
+        segments: terminalViewUtil.splitRowForComposition({
+          column: composedColumn,
+          row,
+          text: composedText,
+        }),
+      }
+    : row;
+  // While composing, the caret rides the end of the preview, where the next
+  // key would land.
+  const caretColumn =
+    cursorColumn === null
+      ? null
+      : isComposing
+        ? cursorColumn + terminalUnicodeWidthUtil.widthOf(composedText ?? '')
+        : cursorColumn;
   const cursorSegments =
-    cursorColumn === null ? row.segments : terminalViewUtil.splitRowForCursor({ cursorColumn, row });
+    caretColumn === null
+      ? composedRow.segments
+      : terminalViewUtil.splitRowForCursor({ cursorColumn: caretColumn, row: composedRow });
   const pieces =
     selection === null
       ? cursorSegments.map((segment) => {
@@ -163,6 +199,7 @@ areTerminalRowPropsEqual);
 export function TerminalView({
   boldFontFamily,
   charWidthPx,
+  composedText = null,
   followRequestCount = 0,
   fontFamily,
   fontSize,
@@ -650,13 +687,18 @@ export function TerminalView({
 
   const terminalRows = visibleRows.map((row, y) => {
     const line = snapshot.firstLine + scrollbackCount + y;
-    const isCursorRow = isCursorVisible && snapshot.cursor.y - scrollbackCount === y;
-    const cursorColumn = isCursorRow ? snapshot.cursor.x : null;
+    const isCursorRow = snapshot.cursor.y - scrollbackCount === y;
+    const cursorColumn = isCursorVisible && isCursorRow ? snapshot.cursor.x : null;
+    // The preview belongs on the cursor row even while the caret itself is
+    // hidden: the buffered word still sits at the caret column.
+    const rowComposedText = isCursorRow ? composedText : null;
     const rowSelection =
       selection === null ? null : rowSelectionOf(selection, line, rowWidthOf(row));
     return (
       <TerminalRow
         boldFontFamily={boldFontFamily}
+        composedColumn={rowComposedText === null ? null : snapshot.cursor.x}
+        composedText={rowComposedText}
         cursorColumn={cursorColumn}
         fontFamily={fontFamily}
         fontSize={fontSize}
