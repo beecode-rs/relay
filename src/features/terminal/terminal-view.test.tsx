@@ -76,13 +76,17 @@ type RemoteSurface = { props: Record<string, unknown> };
 // Drives a View's PanResponder move handler the way the native responder system
 // does: each event carries a touch history whose previous/current centroid
 // positions express one incremental drag step, with strictly increasing
-// timestamps so every event is processed.
-const panMoveDriver = (surface: RemoteSurface) => {
+// timestamps so every event is processed. locationX/locationY ride along as the
+// finger's surface-relative position, like native responder move events do.
+const panMoveDriver = (surface: RemoteSurface, startLocation = { x: 10, y: 300 }) => {
   const onResponderMove = surface.props.onResponderMove as (event: unknown) => void;
   const touchState = { previousY: 500, timestamp: 100 };
+  const location = { ...startLocation };
   const step = (deltaPx: number) => {
     const currentY = touchState.previousY + deltaPx;
+    location.y += deltaPx;
     onResponderMove({
+      nativeEvent: { locationX: location.x, locationY: location.y },
       touchHistory: {
         indexOfSingleActiveTouch: 0,
         mostRecentTimeStamp: touchState.timestamp,
@@ -373,7 +377,29 @@ describe('TerminalView', () => {
 
     move.dragBy(FONT.lineHeight * 1.5, 1);
     expect(onScrollRows).toHaveBeenCalledTimes(1);
-    expect(onScrollRows).toHaveBeenCalledWith({ rows: -1 });
+    expect(onScrollRows).toHaveBeenCalledWith({ rows: -1, x: 0, y: 0 });
+  });
+
+  it('reports the finger cell with each remote scroll so wheel events land where the finger is', async () => {
+    const onScrollRows = jest.fn();
+    await render(
+      <TerminalView
+        charWidthPx={10}
+        isCursorVisible={false}
+        onScrollRows={onScrollRows}
+        snapshot={buildSnapshot({ x: 0, y: 1 }, true)}
+        {...FONT}
+      />
+    );
+    const surface = screen.getByTestId('terminal-scroll-remote');
+    surface.props.onLayout({
+      nativeEvent: { layout: { height: 18 * 12, width: 10 * 40, x: 0, y: 0 } },
+    });
+    const move = panMoveDriver(surface, { x: 275, y: 18 * 6 + 4 });
+
+    move.dragBy(-FONT.lineHeight, 1);
+    expect(onScrollRows).toHaveBeenCalledTimes(1);
+    expect(onScrollRows).toHaveBeenCalledWith({ rows: 1, x: 27, y: 5 });
   });
 });
 
@@ -391,6 +417,42 @@ describe('rowsScrolledBy', () => {
 
   it('never divides by a non-positive line height', () => {
     expect(terminalViewUtil.rowsScrolledBy({ deltaPx: -100, lineHeight: 0 })).toBe(0);
+  });
+});
+
+describe('wheelCellFromPoint', () => {
+  const cellFromPoint = (params: { xPx: number; yPx: number }) => {
+    return terminalViewUtil.wheelCellFromPoint({
+      charWidthPx: 10,
+      lineHeight: 18,
+      viewportHeightPx: 18 * 12,
+      viewportWidthPx: 10 * 40,
+      xPx: params.xPx,
+      yPx: params.yPx,
+    });
+  };
+
+  it('maps a surface point to its zero-based grid cell', () => {
+    expect(cellFromPoint({ xPx: 275, yPx: 94 })).toEqual({ x: 27, y: 5 });
+    expect(cellFromPoint({ xPx: 0, yPx: 0 })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('clamps the cell inside the laid-out grid', () => {
+    expect(cellFromPoint({ xPx: 10 * 40, yPx: 18 * 12 })).toEqual({ x: 39, y: 11 });
+    expect(cellFromPoint({ xPx: -30, yPx: -30 })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('falls back to the top-left cell without usable metrics', () => {
+    expect(
+      terminalViewUtil.wheelCellFromPoint({
+        charWidthPx: 0,
+        lineHeight: 18,
+        viewportHeightPx: 216,
+        viewportWidthPx: 400,
+        xPx: 275,
+        yPx: 94,
+      })
+    ).toEqual({ x: 0, y: 0 });
   });
 });
 

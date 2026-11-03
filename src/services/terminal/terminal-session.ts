@@ -111,12 +111,17 @@ export class TerminalSession {
     return this.isTmuxAttached || this.isMouseTrackingEnabled;
   }
 
-  scrollRows(params: { rows: number }): void {
+  scrollRows(params: { rows: number; x?: number; y?: number }): void {
     if (this.emulator === null || params.rows === 0) {
       return;
     }
     if (this.emulator.isMouseTrackingEnabled) {
-      this.writeKeyScrollRows({ isMouseTrackingEnabled: true, rows: params.rows });
+      this.writeKeyScrollRows({
+        isMouseTrackingEnabled: true,
+        rows: params.rows,
+        x: params.x,
+        y: params.y,
+      });
       return;
     }
     if (this.isTmuxAttached) {
@@ -126,7 +131,12 @@ export class TerminalSession {
     this.writeKeyScrollRows({ isMouseTrackingEnabled: false, rows: params.rows });
   }
 
-  private writeKeyScrollRows(params: { isMouseTrackingEnabled: boolean; rows: number }): void {
+  private writeKeyScrollRows(params: {
+    isMouseTrackingEnabled: boolean;
+    rows: number;
+    x?: number;
+    y?: number;
+  }): void {
     if (this.emulator === null) {
       return;
     }
@@ -136,8 +146,8 @@ export class TerminalSession {
         isApplicationCursorKeys: this.cursorTracker.isApplicationCursorKeys,
         isMouseTrackingEnabled: params.isMouseTrackingEnabled,
         rows: params.rows,
-        x: snapshot.cursor.x,
-        y: snapshot.cursor.y,
+        x: params.x ?? snapshot.cursor.x,
+        y: params.y ?? snapshot.cursor.y,
       })
     );
   }

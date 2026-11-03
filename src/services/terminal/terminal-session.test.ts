@@ -1002,6 +1002,16 @@ describe('TerminalSession.scrollRows', () => {
     expect(bridge.written.join('')).toBe('\x1b[<64;3;1M\x1b[<64;3;1M');
   });
 
+  it('sends SGR wheel events at the finger cell when the drag reports one', async () => {
+    const { bridge, session } = createHarness();
+    await session.start(profile);
+    bridge.emitData('hi\x1b[?1000h');
+    await waitForEmulatorWrites();
+    bridge.written.length = 0;
+    session.scrollRows({ rows: 3, x: 39, y: 11 });
+    expect(bridge.written.join('')).toBe('\x1b[<65;40;12M\x1b[<65;40;12M\x1b[<65;40;12M');
+  });
+
   it('writes nothing for zero rows', async () => {
     const { bridge, session } = createHarness();
     await session.start(profile);

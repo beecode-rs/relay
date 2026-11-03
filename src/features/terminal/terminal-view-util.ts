@@ -98,6 +98,34 @@ export const terminalViewUtil = {
     return -magnitude;
   },
 
+  // A synthesized wheel event must carry the cell under the finger: TUIs that
+  // enable mouse tracking (opencode, tmux with mouse on) hit-test the event
+  // coordinates and only scroll the component under them, so a wheel event
+  // addressed to the cursor's cell lands on the input box and scrolls nothing.
+  // Cells are 0-based, matching keySequences.scrollSequence; grid limits
+  // mirror charMetrics.gridSizeFromProbe's floor so the clamped cell never
+  // exceeds the grid the remote actually laid out.
+  wheelCellFromPoint(params: {
+    charWidthPx: number;
+    lineHeight: number;
+    viewportHeightPx: number;
+    viewportWidthPx: number;
+    xPx: number;
+    yPx: number;
+  }): { x: number; y: number } {
+    const { charWidthPx, lineHeight, viewportHeightPx, viewportWidthPx, xPx, yPx } = params;
+    if (charWidthPx <= 0 || lineHeight <= 0) {
+      return { x: 0, y: 0 };
+    }
+    const maxColumnIndex = Math.max(0, Math.floor(viewportWidthPx / charWidthPx) - 1);
+    const maxRowIndex = Math.max(0, Math.floor(viewportHeightPx / lineHeight) - 1);
+
+    return {
+      x: Math.min(Math.max(0, Math.floor(xPx / charWidthPx)), maxColumnIndex),
+      y: Math.min(Math.max(0, Math.floor(yPx / lineHeight)), maxRowIndex),
+    };
+  },
+
   scrollbackCountOf(params: { isRemoteScroll: boolean; snapshot: TerminalSnapshot }): number {
     const { isRemoteScroll, snapshot } = params;
     if (!isRemoteScroll) {

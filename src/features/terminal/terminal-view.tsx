@@ -38,7 +38,7 @@ export type TerminalViewProps = TerminalFontProps & {
   isCursorVisible: boolean;
   isRemoteScrollEnabled?: boolean;
   onPress?(): void;
-  onScrollRows?(params: { rows: number }): void;
+  onScrollRows?(params: { rows: number; x?: number; y?: number }): void;
   onSelectionLongPress?(position: TerminalSelectionPosition): void;
   onSelectionMarkerSwitch?(): void;
   onSelectionMove?(position: TerminalSelectionPosition): void;
@@ -234,6 +234,7 @@ export function TerminalView({
   const scrollOffsetPxRef = useRef(0);
   const contentHeightPxRef = useRef(0);
   const viewportHeightPxRef = useRef(0);
+  const viewportWidthPxRef = useRef(0);
   const selectionAutoScrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectionAutoScrollTickRef = useRef<() => void>(() => {
     return;
@@ -498,11 +499,29 @@ export function TerminalView({
   }, [activeMarkerPosition, revealSelectionMarker]);
 
   useEffect(() => {
+    // The wheel events synthesized from this gesture carry the cell under the
+    // finger, not the cursor's cell: mouse-tracking TUIs (opencode, tmux with
+    // mouse on) route wheel events to the component under the reported
+    // coordinates, and the cursor sits on the input box that never scrolls.
+    const wheelCellFromEvent = (event: GestureResponderEvent): { x: number; y: number } | null => {
+      const { locationX, locationY } = event.nativeEvent;
+      if (locationX === null || locationY === null || locationX === undefined || locationY === undefined) {
+        return null;
+      }
+      return terminalViewUtil.wheelCellFromPoint({
+        charWidthPx: charWidthPx ?? 0,
+        lineHeight,
+        viewportHeightPx: viewportHeightPxRef.current,
+        viewportWidthPx: viewportWidthPxRef.current,
+        xPx: locationX,
+        yPx: locationY,
+      });
+    };
     const responder = PanResponder.create({
       onMoveShouldSetPanResponder: (_event, gestureState) => {
         return Math.abs(gestureState.dy) > 0;
       },
-      onPanResponderMove: (_event, gestureState) => {
+      onPanResponderMove: (event, gestureState) => {
         cancelLongPress();
         const rows = terminalViewUtil.rowsScrolledBy({
           deltaPx: gestureState.dy - consumedDyRef.current,
@@ -512,7 +531,12 @@ export function TerminalView({
           return;
         }
         consumedDyRef.current -= rows * lineHeight;
-        onScrollRows?.({ rows });
+        const wheelCell = wheelCellFromEvent(event);
+        onScrollRows?.({
+          rows,
+          x: wheelCell?.x,
+          y: wheelCell?.y,
+        });
       },
       onPanResponderRelease: () => {
         consumedDyRef.current = 0;
@@ -522,7 +546,7 @@ export function TerminalView({
       },
     });
     setRemotePanHandlers(responder.panHandlers);
-  }, [cancelLongPress, lineHeight, onScrollRows]);
+  }, [cancelLongPress, charWidthPx, lineHeight, onScrollRows]);
 
   useEffect(() => {
     const responder = PanResponder.create({
@@ -713,6 +737,7 @@ export function TerminalView({
   const handleSurfaceLayout = (event: LayoutChangeEvent): void => {
     const { height, width } = event.nativeEvent.layout;
     viewportHeightPxRef.current = height;
+    viewportWidthPxRef.current = width;
     onSurfaceLayout?.({ heightPx: height, widthPx: width });
     scrollTowardTail();
   };

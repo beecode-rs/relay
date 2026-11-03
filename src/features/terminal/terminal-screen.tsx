@@ -593,8 +593,8 @@ export function TerminalScreen({
 
   const pinchPanHandlers = usePinchFontSize({ onStep: handleFontSizeStep });
 
-  const handleScrollRows = (params: { rows: number }) => {
-    activeSession?.scrollRows({ rows: params.rows });
+  const handleScrollRows = (params: { rows: number; x?: number; y?: number }) => {
+    activeSession?.scrollRows({ rows: params.rows, x: params.x, y: params.y });
   };
 
   const terminalSelection = useTerminalSelection({
