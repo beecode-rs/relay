@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type {
   GestureResponderEvent,
@@ -11,7 +11,7 @@ import type {
 
 import { constant } from '@/constants/constant';
 
-import { rowSelectionOf, rowTextOf, rowWidthOf } from '@/features/terminal/terminal-selection';
+import { rowSelectionOf, rowWidthOf } from '@/features/terminal/terminal-selection';
 import type {
   TerminalSelectionPosition,
   TerminalSelectionState,
@@ -37,14 +37,16 @@ export type TerminalViewProps = TerminalFontProps & {
   followRequestCount?: number;
   isCursorVisible: boolean;
   isRemoteScrollEnabled?: boolean;
-  isRemoteSelectionScrollEnabled?: boolean;
   onPress?(): void;
   onScrollRows?(params: { rows: number; x?: number; y?: number }): void;
   onSelectionLongPress?(position: TerminalSelectionPosition): void;
   onSelectionMarkerSwitch?(): void;
   onSelectionMove?(position: TerminalSelectionPosition): void;
-  onSelectionScrollRows?(params: { rows: number }): void;
   onSurfaceLayout?(size: { heightPx: number; widthPx: number }): void;
+  // Scrolls the local surface once so this line sits at the top, instead of
+  // following the tail: a selection document opens on the window the live
+  // screen showed.
+  pinnedTopLine?: number;
   selection?: TerminalSelectionState | null;
   selectionMoveMode?: TerminalSelectionMoveMode;
   snapshot: TerminalSnapshot;
@@ -207,15 +209,14 @@ export function TerminalView({
   fontSize,
   isCursorVisible,
   isRemoteScrollEnabled = false,
-  isRemoteSelectionScrollEnabled = false,
   lineHeight,
   onPress,
   onScrollRows,
   onSelectionLongPress,
   onSelectionMarkerSwitch,
   onSelectionMove,
-  onSelectionScrollRows,
   onSurfaceLayout,
+  pinnedTopLine,
   selection = null,
   selectionMoveMode = 'relative',
   snapshot,
@@ -232,6 +233,9 @@ export function TerminalView({
     pageY: number;
   } | null>(null);
   const selectionGrantPointRef = useRef<{ x: number; y: number } | null>(null);
+  // The overlay reports content coordinates on the scrolled surface; edge
+  // proximity needs the finger's height within the viewport instead.
+  const selectionGrantViewportYRef = useRef(0);
   const selectionGestureMarkerRef = useRef<TerminalSelectionPosition | null>(null);
   const selectionGestureDeltaRef = useRef({ dx: 0, dy: 0 });
   const selectionLastTapAtRef = useRef(0);
@@ -243,8 +247,7 @@ export function TerminalView({
   const selectionAutoScrollTickRef = useRef<() => void>(() => {
     return;
   });
-  const snapshotRowsTextRef = useRef('');
-  const lastCommandedRowsTextRef = useRef<string | null>(null);
+  const pendingPinnedTopLineRef = useRef<number | null>(null);
 
   // tmux stays on the normal buffer, so the alternate-buffer flag alone never
   // routes its swipes to the remote scroll handler - the session reports that
@@ -269,31 +272,25 @@ export function TerminalView({
     activeMarkerPosition,
     charWidthPx: charWidthPx ?? 0,
     isRemoteScroll,
-    isRemoteSelectionScrollEnabled,
     lineHeight,
-    onSelectionScrollRows,
     scrollbackCount,
     selectionMoveMode,
     snapshot,
   });
 
-  useEffect(() => {
+  // A layout effect so the refresh lands before the pin effect below reads
+  // the mapping in the same commit.
+  useLayoutEffect(() => {
     selectionMappingRef.current = {
       activeMarkerPosition,
       charWidthPx: charWidthPx ?? 0,
       isRemoteScroll,
-      isRemoteSelectionScrollEnabled,
       lineHeight,
-      onSelectionScrollRows,
       scrollbackCount,
       selectionMoveMode,
       snapshot,
     };
   });
-
-  useEffect(() => {
-    snapshotRowsTextRef.current = snapshot.rows.map(rowTextOf).join('\n');
-  }, [snapshot]);
 
   const cancelLongPress = useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -383,11 +380,10 @@ export function TerminalView({
   const resolveSelectionAutoScrollDirection = useCallback(
     (markerLine: number): number => {
       const mapping = selectionMappingRef.current;
-      const dragPoint = selectionGrantPointRef.current;
-      if (dragPoint !== null) {
+      if (selectionGrantPointRef.current !== null) {
         const fingerDirection = terminalViewUtil.edgeDirectionOf({
           lineHeight: mapping.lineHeight,
-          pointYpx: dragPoint.y + selectionGestureDeltaRef.current.dy,
+          pointYpx: selectionGrantViewportYRef.current + selectionGestureDeltaRef.current.dy,
           viewportHeightPx: viewportHeightPxRef.current,
         });
         if (fingerDirection !== 0) {
@@ -413,12 +409,42 @@ export function TerminalView({
     selectionAutoScrollTimerRef.current = null;
   }, []);
 
+  // Lands a pending pin once both the content and the viewport are measured.
+  // Returns true while a pin is pending or just landed, so callers skip the
+  // tail-follow that would otherwise override it.
+  const applyPendingPin = useCallback((): boolean => {
+    const pinnedLine = pendingPinnedTopLineRef.current;
+    if (pinnedLine === null) {
+      return false;
+    }
+    const contentHeightPx = contentHeightPxRef.current;
+    const viewportHeightPx = viewportHeightPxRef.current;
+    if (contentHeightPx <= 0 || viewportHeightPx <= 0) {
+      return true;
+    }
+    pendingPinnedTopLineRef.current = null;
+    const mapping = selectionMappingRef.current;
+    const maxOffsetPx = Math.max(0, contentHeightPx - viewportHeightPx);
+    const targetOffsetPx = Math.min(
+      Math.max((pinnedLine - mapping.snapshot.firstLine) * mapping.lineHeight, 0),
+      maxOffsetPx
+    );
+    scrollOffsetPxRef.current = targetOffsetPx;
+    isFollowingTailRef.current = false;
+    scrollRef.current?.scrollTo({ animated: false, y: targetOffsetPx });
+    return true;
+  }, []);
+
   // Scrolls the surface just enough to bring an off-screen marker row into
   // view, one row inside the nearest edge. Only the local ScrollView can
   // reveal content; the remote surface shows just the remote viewport.
   const revealSelectionMarker = useCallback((markerLine: number) => {
     const mapping = selectionMappingRef.current;
-    if (mapping.isRemoteScroll || mapping.activeMarkerPosition === null) {
+    if (
+      mapping.isRemoteScroll ||
+      mapping.activeMarkerPosition === null ||
+      pendingPinnedTopLineRef.current !== null
+    ) {
       return;
     }
     const targetOffsetPx = terminalViewUtil.revealScrollOffsetOf({
@@ -438,17 +464,14 @@ export function TerminalView({
     scrollRef.current?.scrollTo({ animated: true, y: targetOffsetPx });
   }, []);
 
-  // Auto-scroll drives the local ScrollView by revealing rows, and the tmux
-  // remote surface by commanding remote scrolls one repaint ahead: the tick is
-  // gated until the snapshot reflects the previous command. Alternate-buffer
-  // programs without tmux (vim, less) keep the no-op behavior - their scroll
-  // semantics are the app's own, not the viewport's.
+  // Auto-scroll only applies to the local ScrollView surface: the remote
+  // surface shows just the remote viewport, so there is no local content to
+  // reveal while the marker rides the screen edge. tmux selections reach it
+  // through their pane document, which renders on the local surface.
   const updateSelectionAutoScroll = useCallback(
     (markerLine: number) => {
       const mapping = selectionMappingRef.current;
-      const isRemoteSelectionScrollReady =
-        mapping.isRemoteSelectionScrollEnabled && mapping.onSelectionScrollRows !== undefined;
-      if (mapping.isRemoteScroll && !isRemoteSelectionScrollReady) {
+      if (mapping.isRemoteScroll) {
         stopSelectionAutoScroll();
         return;
       }
@@ -488,21 +511,6 @@ export function TerminalView({
     const direction = resolveSelectionAutoScrollDirection(markerPosition.line);
     if (direction === 0) {
       stopSelectionAutoScroll();
-      return;
-    }
-    if (mapping.isRemoteScroll) {
-      // One remote scroll in flight: the next command waits until the
-      // snapshot changed, which is tmux's repaint of the previous scroll.
-      if (snapshotRowsTextRef.current === lastCommandedRowsTextRef.current) {
-        return;
-      }
-      lastCommandedRowsTextRef.current = snapshotRowsTextRef.current;
-      mapping.onSelectionScrollRows?.({ rows: direction });
-      extendSelectionGestureBase(direction);
-      const extendedPosition = selectionDragMarkerPosition();
-      if (extendedPosition !== null) {
-        emitSelectionPosition(extendedPosition);
-      }
       return;
     }
     const markerTopPx =
@@ -546,6 +554,36 @@ export function TerminalView({
       stopSelectionAutoScroll();
     };
   }, [isSelecting, stopSelectionAutoScroll]);
+
+  // A surface switch (a selection document opening or closing) remounts the
+  // rows: a drag in flight lost its responder, and the measured content height
+  // belongs to the other surface. Layout effects run before the new surface
+  // reports any native layout, so its first measurement is never clobbered.
+  useLayoutEffect(() => {
+    selectionGrantPointRef.current = null;
+    selectionGestureMarkerRef.current = null;
+    selectionGestureDeltaRef.current = { dx: 0, dy: 0 };
+    stopSelectionAutoScroll();
+    contentHeightPxRef.current = 0;
+  }, [isRemoteScroll, stopSelectionAutoScroll]);
+
+  const wasPinnedRef = useRef(false);
+
+  // Declared before the reveal effect: a pending pin holds the reveal off, so
+  // the markers re-anchored onto a fresh document do not scroll it first.
+  useLayoutEffect(() => {
+    if (pinnedTopLine === undefined) {
+      pendingPinnedTopLineRef.current = null;
+      if (wasPinnedRef.current) {
+        wasPinnedRef.current = false;
+        isFollowingTailRef.current = true;
+      }
+      return;
+    }
+    wasPinnedRef.current = true;
+    pendingPinnedTopLineRef.current = pinnedTopLine;
+    applyPendingPin();
+  }, [applyPendingPin, pinnedTopLine]);
 
   // Switching the active marker (double tap, marker keys) can land on a row
   // outside the visible window; during drags the gesture owns scrolling, so
@@ -621,6 +659,8 @@ export function TerminalView({
         };
         selectionGestureDeltaRef.current = { dx: 0, dy: 0 };
         const mapping = selectionMappingRef.current;
+        selectionGrantViewportYRef.current =
+          event.nativeEvent.locationY - (mapping.isRemoteScroll ? 0 : scrollOffsetPxRef.current);
         if (mapping.selectionMoveMode === 'follow') {
           const markerPosition = selectionDragMarkerPosition();
           if (markerPosition !== null) {
@@ -706,6 +746,9 @@ export function TerminalView({
 
   const handleContentSizeChange = (contentWidthPx: number, contentHeightPx: number): void => {
     contentHeightPxRef.current = contentHeightPx;
+    if (applyPendingPin()) {
+      return;
+    }
     scrollTowardTail();
   };
 
@@ -719,7 +762,11 @@ export function TerminalView({
   };
 
   const scrollTowardTail = () => {
-    if (isDraggingRef.current || !isFollowingTailRef.current) {
+    if (
+      isDraggingRef.current ||
+      !isFollowingTailRef.current ||
+      pendingPinnedTopLineRef.current !== null
+    ) {
       return;
     }
     scrollRef.current?.scrollToEnd({ animated: false });
@@ -803,6 +850,9 @@ export function TerminalView({
     viewportHeightPxRef.current = height;
     viewportWidthPxRef.current = width;
     onSurfaceLayout?.({ heightPx: height, widthPx: width });
+    if (applyPendingPin()) {
+      return;
+    }
     scrollTowardTail();
   };
 

@@ -49,6 +49,9 @@ export const constant = {
       min: 4,
     },
     selection: {
+      // tmux history rows captured above the visible pane when a selection
+      // starts; the cap bounds the exec payload and the scratch emulator.
+      tmuxHistoryRows: 1000,
       bg: '#2b4a6f',
       fromActiveBg: '#57d95c',
       fromBg: '#2e6b32',

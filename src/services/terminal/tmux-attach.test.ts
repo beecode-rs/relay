@@ -356,3 +356,51 @@ describe('tmuxAttachUtil.toCloneSessionName', () => {
     );
   });
 });
+
+describe('tmuxAttachUtil.toCaptureScript', () => {
+  it('captures the newest client pane with SGR codes from above the copy-mode window', () => {
+    const script = tmuxAttachUtil.toCaptureScript({ historyRows: 1000 });
+    expect(script).toContain('tail -n 1');
+    expect(script).toContain('#{pane_id} #{pane_top} #{pane_left} #{pane_width} #{pane_height} #{scroll_position}');
+    expect(script).toContain('capture-pane -p -e -t "$1" -S -$((${6:-0} + 1000))');
+  });
+
+  it('keeps the inner script free of single quotes that would end the sh -c wrapper', () => {
+    const script = tmuxAttachUtil.toCaptureScript({ historyRows: 10 });
+    const inner = script.slice("sh -c '".length, -1);
+    expect(inner).not.toContain("'");
+  });
+});
+
+describe('tmuxAttachUtil.toCaptureOutcome', () => {
+  it('parses the geometry and the captured rows', () => {
+    expect(
+      tmuxAttachUtil.toCaptureOutcome({ stdout: 'tmux-capture=1 2 40 2 5\nh-1\nlive-1\nlive-2\n' })
+    ).toEqual({
+      historyRowCount: 1,
+      lines: ['h-1', 'live-1', 'live-2'],
+      paneHeight: 2,
+      paneLeft: 2,
+      paneTop: 1,
+      paneWidth: 40,
+      scrollPosition: 5,
+    });
+  });
+
+  it('reads an empty scroll position as a pane outside copy-mode', () => {
+    const capture = tmuxAttachUtil.toCaptureOutcome({ stdout: 'tmux-capture=0 0 40 1 \nlive-1\n' });
+    expect(capture?.scrollPosition).toBe(0);
+    expect(capture?.lines).toEqual(['live-1']);
+  });
+
+  it('keeps blank rows inside the capture', () => {
+    const capture = tmuxAttachUtil.toCaptureOutcome({ stdout: 'tmux-capture=0 0 40 3\na\n\n\n' });
+    expect(capture?.lines).toEqual(['a', '', '']);
+  });
+
+  it('returns null without a marker, with broken geometry, or with fewer rows than the pane', () => {
+    expect(tmuxAttachUtil.toCaptureOutcome({ stdout: '' })).toBeNull();
+    expect(tmuxAttachUtil.toCaptureOutcome({ stdout: 'tmux-capture=x 0 40 1\nrow\n' })).toBeNull();
+    expect(tmuxAttachUtil.toCaptureOutcome({ stdout: 'tmux-capture=0 0 40 3\nrow\n' })).toBeNull();
+  });
+});

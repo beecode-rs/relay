@@ -1093,7 +1093,6 @@ describe('TerminalSession.scrollRows with tmux attached', () => {
     const { session } = await createTmuxHarness();
     expect(session.isRemoteScrollEnabled).toBe(true);
     expect(session.isTmuxAttached).toBe(true);
-    expect(session.isTmuxViewportScrollEnabled).toBe(true);
   });
 
   it('disables remote scrolling again after detaching from tmux', async () => {
@@ -1102,15 +1101,63 @@ describe('TerminalSession.scrollRows with tmux attached', () => {
     await session.detachTmuxSession();
     expect(session.isRemoteScrollEnabled).toBe(false);
     expect(session.isTmuxAttached).toBe(false);
-    expect(session.isTmuxViewportScrollEnabled).toBe(false);
+  });
+});
+
+describe('TerminalSession.captureTmuxPane', () => {
+  const rowTexts = (rows: { segments: { text: string }[] }[]): string[] => {
+    return rows.map((row) => {
+      return row.segments.map((segment) => {
+        return segment.text;
+      }).join('');
+    });
+  };
+
+  it('captures the pane with its history through the exec channel', async () => {
+    const harness = createHarness();
+    await startWithTmuxAttached(harness);
+    harness.session.resize({ cols: 80, rows: 5 });
+    harness.bridge.execCalls.length = 0;
+    harness.bridge.queueExecResult({
+      exitCode: 0,
+      stderr: '',
+      stdout: 'tmux-capture=0 0 80 4\nold-1\nold-2\n\x1b[31mlive-1\x1b[39m\nlive-2\nlive-3\nlive-4\n',
+    });
+
+    const document = await harness.session.captureTmuxPane();
+
+    expect(harness.bridge.execCalls[0]).toContain('capture-pane -p -e');
+    expect(document).not.toBeNull();
+    // Two history rows above the pane, then one pad row for the status line.
+    expect(rowTexts(document?.snapshot.rows ?? [])).toEqual([
+      'old-1',
+      'old-2',
+      'live-1',
+      'live-2',
+      'live-3',
+      'live-4',
+      '',
+    ]);
+    expect(document?.snapshot.rows[2].segments[0].fgColor).toBeDefined();
+    expect(document?.screenTopLine).toBe(2);
+    expect(document?.colOffset).toBe(0);
   });
 
-  it('keeps viewport-following selection scrolls off while a mouse-tracking app owns the pane', async () => {
-    const { bridge, session } = await createTmuxHarness();
-    bridge.emitData('\x1b[?1000h');
-    await waitForEmulatorWrites();
-    expect(session.isTmuxAttached).toBe(true);
-    expect(session.isTmuxViewportScrollEnabled).toBe(false);
+  it('skips the exec while tmux is not attached', async () => {
+    const harness = createHarness();
+    await harness.session.start(profile);
+    harness.bridge.execCalls.length = 0;
+
+    expect(await harness.session.captureTmuxPane()).toBeNull();
+    expect(harness.bridge.execCalls).toEqual([]);
+  });
+
+  it('resolves null when the capture output is unusable', async () => {
+    const harness = createHarness();
+    await startWithTmuxAttached(harness);
+    harness.bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: '' });
+
+    expect(await harness.session.captureTmuxPane()).toBeNull();
   });
 });
 

@@ -69,18 +69,6 @@ const buildTallSnapshot = (rowCount: number): TerminalSnapshot => {
   };
 };
 
-const buildAlternateSnapshot = (rowCount: number): TerminalSnapshot => {
-  return {
-    rows: Array.from({ length: rowCount }, (_unused, index) => {
-      return { segments: [segment({ text: `row-${index}` })] };
-    }),
-    cursor: { x: 0, y: 0 },
-    firstLine: 0,
-    isAlternateBuffer: true,
-    viewportRowCount: rowCount,
-  };
-};
-
 type JsonNode = { type?: string; children?: unknown[] };
 
 type RemoteSurface = { props: Record<string, unknown> };
@@ -1315,166 +1303,123 @@ describe('TerminalView selection auto-scroll', () => {
     }
   });
 
-  it('auto-scrolls the tmux remote surface while the marker rides the top edge', async () => {
+  it('auto-scrolls when the finger holds at the viewport edge of a scrolled surface', async () => {
     jest.useFakeTimers();
+    const scrollToSpy = jest.spyOn(ScrollView.prototype, 'scrollTo');
     try {
       const onSelectionMove = jest.fn();
-      const onSelectionScrollRows = jest.fn();
-      const view = await render(
+      await render(
         <TerminalView
           charWidthPx={10}
           isCursorVisible={false}
-          isRemoteSelectionScrollEnabled
-          onScrollRows={jest.fn()}
           onSelectionMove={onSelectionMove}
-          onSelectionScrollRows={onSelectionScrollRows}
-          selection={selectionState(position(0, 0), position(5, 3))}
-          selectionMoveMode="follow"
-          snapshot={buildAlternateSnapshot(10)}
+          selection={selectionState(position(25, 0), position(25, 3))}
+          snapshot={buildTallSnapshot(40)}
           {...FONT}
         />
       );
-      screen.getByTestId('terminal-scroll-remote').props.onLayout({
-        nativeEvent: { layout: { height: 10 * FONT.lineHeight, width: 400, x: 0, y: 0 } },
+      const scrollView = primeScrollViewMetrics({
+        contentHeightPx: 40 * FONT.lineHeight,
+        viewportHeightPx: 10 * FONT.lineHeight,
       });
-      driveSelectionDrag(screen.getByTestId('terminal-selection-overlay'), { x: 25, y: 4 }, { dx: 0, dy: 8 });
-      expect(onSelectionMove).toHaveBeenNthCalledWith(1, position(0, 2));
+      scrollView.props.onScroll({
+        nativeEvent: {
+          contentOffset: { y: 20 * FONT.lineHeight },
+          contentSize: { height: 40 * FONT.lineHeight },
+          layoutMeasurement: { height: 10 * FONT.lineHeight },
+        },
+      });
+      // The overlay reports content coordinates: the grant sits on viewport
+      // row 5 of a surface scrolled 20 rows down. Relative mode moves the
+      // marker only three rows, short of the edge band, while the finger
+      // itself reaches the physical top edge.
+      driveSelectionDrag(
+        screen.getByTestId('terminal-selection-overlay'),
+        { x: 30, y: 25 * FONT.lineHeight },
+        { dx: 0, dy: -60 }
+      );
+      expect(onSelectionMove).toHaveBeenLastCalledWith(position(22, 0));
+      scrollToSpy.mockClear();
 
       await act(async () => {
         jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs);
       });
-      expect(onSelectionScrollRows).toHaveBeenCalledTimes(1);
-      expect(onSelectionScrollRows).toHaveBeenCalledWith({ rows: -1 });
-      expect(onSelectionMove).toHaveBeenNthCalledWith(2, position(0, 2));
+      expect(scrollToSpy).toHaveBeenCalledWith({ animated: false, y: 19 * FONT.lineHeight });
+      expect(onSelectionMove).toHaveBeenLastCalledWith(position(21, 0));
+    } finally {
+      scrollToSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 
-      // The repaint of the first scroll has not landed: the next tick waits.
+  it('keeps a scrolled surface still while the finger rests mid-viewport', async () => {
+    jest.useFakeTimers();
+    try {
+      const onSelectionMove = jest.fn();
+      await render(
+        <TerminalView
+          charWidthPx={10}
+          isCursorVisible={false}
+          onSelectionMove={onSelectionMove}
+          selection={selectionState(position(25, 0), position(25, 3))}
+          snapshot={buildTallSnapshot(40)}
+          {...FONT}
+        />
+      );
+      const scrollView = primeScrollViewMetrics({
+        contentHeightPx: 40 * FONT.lineHeight,
+        viewportHeightPx: 10 * FONT.lineHeight,
+      });
+      scrollView.props.onScroll({
+        nativeEvent: {
+          contentOffset: { y: 20 * FONT.lineHeight },
+          contentSize: { height: 40 * FONT.lineHeight },
+          layoutMeasurement: { height: 10 * FONT.lineHeight },
+        },
+      });
+      driveSelectionDrag(
+        screen.getByTestId('terminal-selection-overlay'),
+        { x: 30, y: 25 * FONT.lineHeight },
+        { dx: 0, dy: FONT.lineHeight }
+      );
+
       await act(async () => {
         jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs * 4);
       });
-      expect(onSelectionScrollRows).toHaveBeenCalledTimes(1);
-
-      await act(async () => {
-        await view.rerender(
-          <TerminalView
-            charWidthPx={10}
-            isCursorVisible={false}
-            isRemoteSelectionScrollEnabled
-            onScrollRows={jest.fn()}
-            onSelectionMove={onSelectionMove}
-            onSelectionScrollRows={onSelectionScrollRows}
-            selection={selectionState(position(0, 0), position(5, 3))}
-            selectionMoveMode="follow"
-            snapshot={{
-              ...buildAlternateSnapshot(10),
-              rows: [
-                { segments: [segment({ text: 'revealed' })] },
-                ...Array.from({ length: 9 }, (_unused, index) => {
-                  return { segments: [segment({ text: `row-${index}` })] };
-                }),
-              ],
-            }}
-            {...FONT}
-          />
-        );
-      });
-      await act(async () => {
-        jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs);
-      });
-      expect(onSelectionScrollRows).toHaveBeenCalledTimes(2);
-
-      screen.getByTestId('terminal-selection-overlay').props.onResponderRelease({});
-      const callCountAfterRelease = onSelectionScrollRows.mock.calls.length;
-      await act(async () => {
-        jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs * 6);
-      });
-      expect(onSelectionScrollRows.mock.calls.length).toBe(callCountAfterRelease);
+      expect(onSelectionMove).toHaveBeenCalledTimes(1);
+      expect(onSelectionMove).toHaveBeenLastCalledWith(position(26, 0));
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('auto-scrolls the tmux remote surface downward at the bottom edge', async () => {
-    jest.useFakeTimers();
+  it('opens a pinned surface on the pinned line instead of the tail', async () => {
+    const scrollToSpy = jest.spyOn(ScrollView.prototype, 'scrollTo');
+    const scrollToEndSpy = jest.spyOn(ScrollView.prototype, 'scrollToEnd');
     try {
-      const onSelectionScrollRows = jest.fn();
       await render(
         <TerminalView
           charWidthPx={10}
           isCursorVisible={false}
-          isRemoteSelectionScrollEnabled
-          onScrollRows={jest.fn()}
-          onSelectionMove={jest.fn()}
-          onSelectionScrollRows={onSelectionScrollRows}
-          selection={selectionState(position(9, 0), position(0, 3))}
-          selectionMoveMode="follow"
-          snapshot={buildAlternateSnapshot(10)}
+          pinnedTopLine={20}
+          selection={selectionState(position(22, 0), position(22, 3))}
+          snapshot={buildTallSnapshot(40)}
           {...FONT}
         />
       );
-      screen.getByTestId('terminal-scroll-remote').props.onLayout({
-        nativeEvent: { layout: { height: 10 * FONT.lineHeight, width: 400, x: 0, y: 0 } },
+      primeScrollViewMetrics({
+        contentHeightPx: 40 * FONT.lineHeight,
+        viewportHeightPx: 10 * FONT.lineHeight,
       });
-      driveSelectionDrag(
-        screen.getByTestId('terminal-selection-overlay'),
-        { x: 25, y: 9 * FONT.lineHeight + 2 },
-        { dx: 0, dy: 8 }
-      );
-
-      await act(async () => {
-        jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs);
-      });
-      expect(onSelectionScrollRows).toHaveBeenCalledTimes(1);
-      expect(onSelectionScrollRows).toHaveBeenCalledWith({ rows: 1 });
+      expect(scrollToSpy).toHaveBeenCalledTimes(1);
+      expect(scrollToSpy).toHaveBeenCalledWith({ animated: false, y: 20 * FONT.lineHeight });
+      // The prototype spies also see views earlier tests left mounted; only
+      // this surface's own calls matter.
+      const pinnedScrollView = scrollToSpy.mock.contexts[0];
+      expect(scrollToEndSpy.mock.contexts).not.toContain(pinnedScrollView);
     } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('auto-scrolls when the finger holds at the physical edge but the relative marker cannot reach it', async () => {
-    jest.useFakeTimers();
-    try {
-      const onSelectionMove = jest.fn();
-      const onSelectionScrollRows = jest.fn();
-      await render(
-        <TerminalView
-          charWidthPx={10}
-          isCursorVisible={false}
-          isRemoteSelectionScrollEnabled
-          onScrollRows={jest.fn()}
-          onSelectionMove={onSelectionMove}
-          onSelectionScrollRows={onSelectionScrollRows}
-          selection={selectionState(position(9, 0), position(9, 3))}
-          snapshot={buildAlternateSnapshot(10)}
-          {...FONT}
-        />
-      );
-      screen.getByTestId('terminal-scroll-remote').props.onLayout({
-        nativeEvent: { layout: { height: 10 * FONT.lineHeight, width: 400, x: 0, y: 0 } },
-      });
-      // Relative mode: one row of marker travel per line-height of finger
-      // travel. The finger rides the physical top edge while the marker has
-      // only climbed to row 5 - a single drag can never bridge nine rows.
-      driveSelectionDrag(
-        screen.getByTestId('terminal-selection-overlay'),
-        { x: 25, y: 90 },
-        { dx: 0, dy: -80 }
-      );
-      expect(onSelectionMove).toHaveBeenLastCalledWith(position(5, 0));
-
-      await act(async () => {
-        jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs);
-      });
-      expect(onSelectionScrollRows).toHaveBeenCalledTimes(1);
-      expect(onSelectionScrollRows).toHaveBeenCalledWith({ rows: -1 });
-
-      // Later ticks wait for the repaint, then keep scrolling and stretching
-      // the marker upward.
-      await act(async () => {
-        jest.advanceTimersByTime(constant.terminal.gesture.autoScrollIntervalMs * 4);
-      });
-      expect(onSelectionScrollRows).toHaveBeenCalledTimes(1);
-    } finally {
-      jest.useRealTimers();
+      scrollToSpy.mockRestore();
+      scrollToEndSpy.mockRestore();
     }
   });
 

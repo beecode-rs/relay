@@ -54,11 +54,13 @@ import { DEFAULT_TERMINAL_PREFERENCE } from '@/services/terminal/terminal-prefer
 import type { FontSizeStepDirection } from '@/services/terminal/terminal-preference';
 import { TerminalPreferenceService } from '@/services/terminal/terminal-preference-service';
 import { tmuxAttachUtil } from '@/services/terminal/tmux-attach';
+import type { TmuxPaneDocument } from '@/services/terminal/tmux-pane-document';
 import type { SshConnectOptions } from '@/services/terminal/ssh-terminal-types';
 
 export type TerminalScreenSession = Pick<
   TerminalSession,
   | 'acceptHostKey'
+  | 'captureTmuxPane'
   | 'cloneTmuxSession'
   | 'createTmuxSession'
   | 'currentState'
@@ -71,7 +73,6 @@ export type TerminalScreenSession = Pick<
   | 'isActiveFor'
   | 'isRemoteScrollEnabled'
   | 'isTmuxAttached'
-  | 'isTmuxViewportScrollEnabled'
   | 'killTmuxSession'
   | 'listRemoteDirectories'
   | 'listTmuxSessions'
@@ -599,15 +600,18 @@ export function TerminalScreen({
     activeSession?.scrollRows({ rows: params.rows, x: params.x, y: params.y });
   };
 
-  // Selection auto-scroll commands remote scrolls: the session scrolls the
-  // tmux viewport and the selection registers the content shift the repaint
-  // will apply (scroll-up moves the content DOWN one row per scrolled row).
-  const handleSelectionScrollRows = (params: { rows: number }) => {
-    terminalSelection.expectViewportShift(-params.rows);
-    activeSession?.scrollRows({ rows: params.rows });
-  };
+  // tmux repaints one window at a time, so the live screen never holds more
+  // than a screenful; the selection runs over the pane and its history read
+  // straight from tmux instead.
+  const loadSelectionDocument = useCallback((): Promise<TmuxPaneDocument | null> => {
+    if (activeSession?.isTmuxAttached !== true) {
+      return Promise.resolve(null);
+    }
+    return activeSession.captureTmuxPane();
+  }, [activeSession]);
 
   const terminalSelection = useTerminalSelection({
+    loadDocument: loadSelectionDocument,
     onCopyText: async (text: string): Promise<void> => {
       await Clipboard.setStringAsync(text);
     },
@@ -615,6 +619,7 @@ export function TerminalScreen({
   });
 
   const isSelectionActive = terminalSelection.selection !== null;
+  const selectionDocument = terminalSelection.document;
 
   // Selecting is a read-only gesture over the terminal, so drop the keyboard
   // for it no matter how the mode was entered - toolbar toggle or long-press.
@@ -1203,19 +1208,20 @@ export function TerminalScreen({
               fontFamily={fontFamily}
               fontSize={fontSize}
               isCursorVisible
-              isRemoteScrollEnabled={activeSession?.isRemoteScrollEnabled ?? false}
-              isRemoteSelectionScrollEnabled={activeSession?.isTmuxViewportScrollEnabled ?? false}
+              isRemoteScrollEnabled={
+                selectionDocument === null && (activeSession?.isRemoteScrollEnabled ?? false)
+              }
               lineHeight={lineHeight}
               onScrollRows={handleScrollRows}
               onSelectionLongPress={terminalSelection.startAtPosition}
               onSelectionMarkerSwitch={terminalSelection.switchActiveMarker}
               onSelectionMove={terminalSelection.moveActiveMarkerTo}
-              onSelectionScrollRows={handleSelectionScrollRows}
+              pinnedTopLine={selectionDocument?.screenTopLine}
               selection={terminalSelection.selection}
               selectionMoveMode={
                 preference.isSelectionFollowFingerEnabled ? 'follow' : 'relative'
               }
-              snapshot={snapshot}
+              snapshot={selectionDocument?.snapshot ?? snapshot}
             />
           ) : (
             <TerminalStatusView

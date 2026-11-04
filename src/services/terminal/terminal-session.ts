@@ -10,8 +10,10 @@ import { tmuxAttachUtil } from '@/services/terminal/tmux-attach';
 import { tmuxCheckUtil } from '@/services/terminal/tmux-check';
 import type { TmuxListOutcome } from '@/services/terminal/tmux-check';
 import { createTerminalEmulator } from '@/services/terminal/terminal-emulator';
-import type { TerminalEmulator } from '@/services/terminal/terminal-emulator';
+import type { TerminalEmulator, TerminalEmulatorFactory } from '@/services/terminal/terminal-emulator';
 import type { TerminalSnapshot } from '@/services/terminal/terminal-serializer';
+import { tmuxPaneDocumentUtil } from '@/services/terminal/tmux-pane-document';
+import type { TmuxPaneDocument } from '@/services/terminal/tmux-pane-document';
 import type {
   SshBridgeError,
   SshBridgeEventError,
@@ -44,8 +46,6 @@ export type TerminalSessionState = {
 };
 
 export type TerminalSessionListener = (state: TerminalSessionState) => void;
-
-export type TerminalEmulatorFactory = (params: { cols: number; rows: number }) => TerminalEmulator;
 
 const TMUX_SCROLL_FLUSH_DELAY_MS = 120;
 const ACTIVE_STATUSES: readonly TerminalSessionStatus[] = [
@@ -115,13 +115,6 @@ export class TerminalSession {
     return this.tmuxAttached;
   }
 
-  // Selection auto-scroll needs scrolls that shift the tmux viewport in
-  // copy-mode: with mouse tracking on, scrollRows routes to wheel events the
-  // inner app interprets however it likes, so the selection cannot follow.
-  get isTmuxViewportScrollEnabled(): boolean {
-    return this.tmuxAttached && !this.isMouseTrackingEnabled;
-  }
-
   scrollRows(params: { rows: number; x?: number; y?: number }): void {
     if (this.emulator === null || params.rows === 0) {
       return;
@@ -184,6 +177,32 @@ export class TerminalSession {
       } catch {
         return;
       }
+    }
+  }
+
+  // The live screen only holds tmux's repaint of one window, so selections
+  // that span more than a screen read the pane and its history from tmux
+  // itself. Null when tmux is not attached or the capture fails; callers
+  // then keep selecting over the live screen.
+  async captureTmuxPane(): Promise<TmuxPaneDocument | null> {
+    if (!this.tmuxAttached || this.state.status !== 'connected') {
+      return null;
+    }
+    try {
+      const result = await this.port.exec(
+        tmuxAttachUtil.toCaptureScript({ historyRows: constant.terminal.selection.tmuxHistoryRows })
+      );
+      const capture = tmuxAttachUtil.toCaptureOutcome({ stdout: result.stdout });
+      if (capture === null) {
+        return null;
+      }
+      return await tmuxPaneDocumentUtil.toDocument({
+        capture,
+        createEmulator: this.createEmulator,
+        screenRowCount: this.size.rows,
+      });
+    } catch {
+      return null;
     }
   }
 

@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react-native';
 
+import type { TerminalSelectionDocument } from '@/features/terminal/terminal-selection';
 import { useTerminalSelection } from '@/features/terminal/use-terminal-selection';
 import type { StyledRow, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 
@@ -216,124 +217,115 @@ describe('useTerminalSelection', () => {
   });
 });
 
-describe('useTerminalSelection remote viewport shifts', () => {
-  const rowsOf = (...texts: string[]): StyledRow[] => {
-    return texts.map((text) => {
-      return rowOf(text);
-    });
+describe('useTerminalSelection documents', () => {
+  const documentRows = Array.from({ length: 40 }, (_unused, index) => {
+    return rowOf(`doc-${index} text`);
+  });
+  const document: TerminalSelectionDocument = {
+    colOffset: 0,
+    screenTopLine: 30,
+    snapshot: snapshotOf(documentRows),
   };
 
-  const startUpwardSelection = async (current: () => HookResult) => {
-    await act(async () => {
-      current().startAtPosition({ col: 0, line: 2 });
+  const deferred = () => {
+    const box: { resolve: (value: TerminalSelectionDocument | null) => void } = {
+      resolve: () => {
+        return;
+      },
+    };
+    const promise = new Promise<TerminalSelectionDocument | null>((resolve) => {
+      box.resolve = resolve;
     });
-    await act(async () => {
-      current().moveActiveMarkerTo({ col: 0, line: 0 });
-    });
+    return { promise, resolve: (value: TerminalSelectionDocument | null) => box.resolve(value) };
   };
 
-  it('remaps the inactive marker when a commanded shift repaints', async () => {
-    const { current, rerender } = await renderSelectionHook(
-      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
-    );
-    await startUpwardSelection(current);
-    expect(current().selection).toEqual({
-      activeMarker: 'from',
-      from: { col: 0, line: 0 },
-      to: { col: 0, line: 2 },
+  const renderDocumentHook = async (loadDocument: () => Promise<TerminalSelectionDocument | null>) => {
+    const onCopyText = jest.fn();
+    const liveSnapshot = snapshotOf([rowOf('live-0 text'), rowOf('live-1 text')]);
+    const hook = await renderHook(() => {
+      return useTerminalSelection({ loadDocument, onCopyText, snapshot: liveSnapshot });
     });
+    return {
+      current: () => {
+        return hook.result.current;
+      },
+      onCopyText,
+    };
+  };
+
+  it('starts on the live screen, then moves the selection onto the loaded document', async () => {
+    const load = deferred();
+    const { current } = await renderDocumentHook(() => {
+      return load.promise;
+    });
+    await act(async () => {
+      current().startAtPosition({ col: 1, line: 1 });
+    });
+    expect(current().document).toBeNull();
+    expect(current().selection?.to).toEqual({ col: 5, line: 1 });
 
     await act(async () => {
-      current().expectViewportShift(1);
+      load.resolve(document);
     });
-    await act(async () => {
-      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
-    });
+    expect(current().document).toBe(document);
     expect(current().selection).toEqual({
-      activeMarker: 'from',
-      from: { col: 0, line: 0 },
-      to: { col: 0, line: 3 },
+      activeMarker: 'to',
+      from: { col: 0, line: 31 },
+      to: { col: 5, line: 31 },
     });
   });
 
-  it('keeps a commanded shift pending until the rows change', async () => {
-    const { current, rerender } = await renderSelectionHook(
-      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
-    );
-    await startUpwardSelection(current);
-
-    await act(async () => {
-      current().expectViewportShift(1);
+  it('moves markers anywhere in the document and copies across many screens', async () => {
+    const { current, onCopyText } = await renderDocumentHook(() => {
+      return Promise.resolve(document);
     });
     await act(async () => {
-      rerender(snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d')));
+      current().startAtPosition({ col: 0, line: 1 });
     });
-    expect(current().selection?.to).toEqual({ col: 0, line: 2 });
-
-    await act(async () => {
-      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
-    });
-    expect(current().selection?.to).toEqual({ col: 0, line: 3 });
-  });
-
-  it('accumulates tail rows past the viewport and copies the whole span', async () => {
-    const { current, onCopyText, rerender } = await renderSelectionHook(
-      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
-    );
-    await startUpwardSelection(current);
-
-    await act(async () => {
-      current().expectViewportShift(1);
-    });
-    await act(async () => {
-      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
-    });
-    await act(async () => {
-      current().expectViewportShift(1);
-    });
-    await act(async () => {
-      rerender(snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')));
-    });
-    expect(current().selection).toEqual({
-      activeMarker: 'from',
-      from: { col: 0, line: 0 },
-      to: { col: Number.MAX_SAFE_INTEGER, line: 3 },
-    });
-
-    await act(async () => {
-      current().accept();
-    });
-    expect(onCopyText).toHaveBeenCalledWith('new2\nnew\nrow-a\nrow-b\nrow-c');
-  });
-
-  it('drops the tail when the end marker is dragged back inside', async () => {
-    const { current, rerender } = await renderSelectionHook(
-      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
-    );
-    await startUpwardSelection(current);
-    await act(async () => {
-      current().expectViewportShift(1);
-    });
-    await act(async () => {
-      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
-    });
-    await act(async () => {
-      current().expectViewportShift(1);
-    });
-    await act(async () => {
-      rerender(snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')));
-    });
-
     await act(async () => {
       current().switchActiveMarker();
     });
     await act(async () => {
-      current().moveActiveMarkerTo({ col: 0, line: 1 });
+      current().moveActiveMarkerTo({ col: 0, line: 2 });
     });
-    expect(current().selection).toEqual({
-      activeMarker: 'to',
-      from: { col: 0, line: 0 },
-      to: { col: 0, line: 1 },
+    expect(current().selection?.from).toEqual({ col: 0, line: 2 });
+
+    await act(async () => {
+      current().accept();
     });
+    const copied = onCopyText.mock.calls[0][0] as string;
+    expect(copied.split('\n')).toHaveLength(30);
+    expect(copied.startsWith('doc-2 text')).toBe(true);
+    expect(copied.endsWith('doc-31')).toBe(true);
+    expect(current().document).toBeNull();
+  });
+
+  it('drops a document that lands after the selection was cancelled', async () => {
+    const load = deferred();
+    const { current } = await renderDocumentHook(() => {
+      return load.promise;
+    });
+    await act(async () => {
+      current().startFromLastWord();
+    });
+    await act(async () => {
+      current().cancel();
+    });
+    await act(async () => {
+      load.resolve(document);
+    });
+    expect(current().document).toBeNull();
+    expect(current().selection).toBeNull();
+  });
+
+  it('keeps selecting on the live screen when no document loads', async () => {
+    const { current } = await renderDocumentHook(() => {
+      return Promise.resolve(null);
+    });
+    await act(async () => {
+      current().startAtPosition({ col: 1, line: 0 });
+    });
+    expect(current().document).toBeNull();
+    expect(current().selection?.from).toEqual({ col: 0, line: 0 });
   });
 });

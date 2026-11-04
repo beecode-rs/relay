@@ -15,6 +15,7 @@ import { serverConnectOptions } from '@/services/connection/connect-options';
 import type { ServerLastSessionStore } from '@/services/connection/server-last-session-store';
 import type { ActiveServerStore } from '@/services/connection/active-server-store';
 import type { TerminalSnapshot } from '@/services/terminal/terminal-serializer';
+import type { TmuxPaneDocument } from '@/services/terminal/tmux-pane-document';
 import type { TerminalSessionState } from '@/services/terminal/terminal-session';
 import type { SshConnectOptions } from '@/services/terminal/ssh-terminal-types';
 
@@ -97,6 +98,7 @@ const CONNECT_OPTIONS: SshConnectOptions = {
 
 type FakeSession = TerminalScreenSession & {
   acceptedHostKeyCount: number;
+  captureTmuxPaneCalls: number;
   clonedTmuxSessions: { nextSessionName: string; sessionName: string }[];
   createdTmuxSessions: { sessionName: string; startPath?: string }[];
   detachedTmuxCount: number;
@@ -107,6 +109,7 @@ type FakeSession = TerminalScreenSession & {
   killedTmuxSessions: string[];
   listRemoteDirectoriesCalls: { path: string }[];
   listTmuxSessionsCalls: number;
+  paneDocument: TmuxPaneDocument | null;
   rejectedHostKeyCount: number;
   remoteDirectories: string[];
   renamedTmuxSessions: { nextSessionName: string; sessionName: string }[];
@@ -140,6 +143,13 @@ const createFakeSession = (
       this.acceptedHostKeyCount += 1;
     },
     acceptedHostKeyCount: 0,
+    captureTmuxPaneCalls: 0,
+    async captureTmuxPane() {
+      this.captureTmuxPaneCalls += 1;
+
+      return this.paneDocument;
+    },
+    paneDocument: null as TmuxPaneDocument | null,
     drainPendingOutput: () => {
       return null;
     },
@@ -171,7 +181,6 @@ const createFakeSession = (
     isApplicationCursorKeys: false,
     isRemoteScrollEnabled,
     isTmuxAttached,
-    isTmuxViewportScrollEnabled: isTmuxAttached,
     isActiveFor: (options) => {
       return tracked.live !== null && isActiveStatus(tracked.state.status) && sameIdentity(tracked.live, options);
     },
@@ -2231,119 +2240,81 @@ describe('TerminalScreen selection', () => {
     expect(screen.getByText('red').props.style.backgroundColor).toBe(constant.terminal.bg);
   });
 
-  it('scrolls the tmux viewport when a dragged selection marker rides the screen edge', async () => {
+  it('selects over the tmux pane document and copies from it', async () => {
     const session = createFakeSession(undefined, undefined, true, true);
-    const buildViewportSnapshot = (topText: string): TerminalSnapshot => {
+    const rowOfText = (text: string) => {
       return {
-        cursor: { x: 0, y: 0 },
-        firstLine: 0,
-        isAlternateBuffer: true,
-        rows: Array.from({ length: 10 }, (_unused, index) => {
-          const text = index === 0 ? topText : `row-${index}`;
-          return {
-            segments: [
-              { bold: false, fgColor: undefined, inverse: false, italic: false, text, underline: false },
-            ],
-          };
-        }),
-        viewportRowCount: 10,
+        segments: [{ bold: false, fgColor: undefined, inverse: false, italic: false, text, underline: false }],
       };
     };
-    let currentSnapshot = buildViewportSnapshot('row-0');
     session.snapshot = () => {
-      return currentSnapshot;
+      return {
+        cursor: { x: 0, y: 1 },
+        firstLine: 0,
+        isAlternateBuffer: false,
+        rows: [rowOfText('live alpha'), rowOfText('live beta')],
+        viewportRowCount: 2,
+      };
     };
-    session.drainPendingOutput = () => {
-      return null;
+    session.paneDocument = {
+      colOffset: 0,
+      screenTopLine: 30,
+      snapshot: {
+        cursor: { x: 0, y: -1 },
+        firstLine: 0,
+        isAlternateBuffer: false,
+        rows: [
+          ...Array.from({ length: 30 }, (_unused, index) => {
+            return rowOfText(`history-${index}`);
+          }),
+          rowOfText('live alpha'),
+          rowOfText('live beta'),
+        ],
+        viewportRowCount: 32,
+      },
     };
     await renderScreen(session);
     session.emitState({ status: 'connected' });
     await waitFor(() => {
       expect(screen.getByTestId('terminal-scroll-remote')).toBeTruthy();
     });
-    screen.getByTestId('terminal-scroll-remote').props.onLayout({
-      nativeEvent: { layout: { height: 10 * 18, width: 400, x: 0, y: 0 } },
-    });
 
     await fireEvent.press(screen.getByRole('button', { name: 'Extra key layers' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Extra key layers' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Start selection' }));
+
+    // The pane document swaps in on the local, scrollable surface with the
+    // whole history rendered, and the selection keeps its on-screen cells.
     await waitFor(() => {
-      expect(screen.getByTestId('terminal-selection-overlay').props.onStartShouldSetResponder).toBeDefined();
+      expect(screen.getByTestId('terminal-scroll')).toBeTruthy();
     });
+    expect(session.captureTmuxPaneCalls).toBe(1);
+    expect(screen.queryByTestId('terminal-scroll-remote')).toBeNull();
+    expect(screen.getByText('history-0')).toBeTruthy();
 
-    // Relative mode by default: the marker moves by the dragged rows, so the
-    // active from-marker at row 9 reaches the top edge after nine rows up.
-    const overlay = screen.getByTestId('terminal-selection-overlay');
-    overlay.props.onResponderGrant({
-      nativeEvent: { locationX: 30, locationY: 150 },
-      touchHistory: {
-        indexOfSingleActiveTouch: 0,
-        mostRecentTimeStamp: 100,
-        numberActiveTouches: 1,
-        touchBank: [
-          {
-            currentPageX: 30,
-            currentPageY: 150,
-            previousPageX: 30,
-            previousPageY: 150,
-            touchActive: true,
-          },
-        ],
-      },
+    await fireEvent.press(screen.getByRole('button', { name: 'Accept selection' }));
+    await waitFor(() => {
+      expect(Clipboard.setStringAsync).toHaveBeenCalledWith('beta');
     });
-    await act(async () => {
-      overlay.props.onResponderMove({
-        touchHistory: {
-          indexOfSingleActiveTouch: 0,
-          mostRecentTimeStamp: 101,
-          numberActiveTouches: 1,
-          touchBank: [
-            {
-              currentPageX: 30,
-              currentPageY: 150 - 9 * 18,
-              currentTimeStamp: 101,
-              previousPageX: 30,
-              previousPageY: 150,
-              touchActive: true,
-            },
-          ],
-        },
-      });
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-scroll-remote')).toBeTruthy();
     });
+  });
 
-    await act(async () => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 130);
-      });
+  it('keeps selecting on the live screen when tmux is not attached', async () => {
+    const session = createFakeSession();
+    await renderScreen(session);
+    session.emitState({ status: 'connected' });
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-scroll')).toBeTruthy();
     });
-    expect(session.scrolledRows).toContain(-1);
-
-    // The repaint of the first scroll lands: the gate opens for the next one.
-    currentSnapshot = buildViewportSnapshot('revealed');
-    session.drainPendingOutput = () => {
-      return 'repaint';
-    };
-    await act(async () => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 130);
-      });
+    await fireEvent.press(screen.getByRole('button', { name: 'Extra key layers' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Extra key layers' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Start selection' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Accept selection' }));
+    await waitFor(() => {
+      expect(Clipboard.setStringAsync).toHaveBeenCalledWith('red');
     });
-    session.drainPendingOutput = () => {
-      return null;
-    };
-    const scrolledCount = session.scrolledRows.filter((rows) => {
-      return rows === -1;
-    }).length;
-    await act(async () => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 130);
-      });
-    });
-    expect(
-      session.scrolledRows.filter((rows) => {
-        return rows === -1;
-      }).length
-    ).toBeGreaterThan(scrolledCount);
+    expect(session.captureTmuxPaneCalls).toBe(0);
   });
 });

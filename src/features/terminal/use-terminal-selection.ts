@@ -1,39 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  applyViewportShift,
-  clampPosition,
-  clampSelectionOverflowing,
+  clampSelection,
   extractSelectedText,
   lastWordRange,
   moveActiveMarker,
-  renderableSelectionOf,
-  rowTextOf,
-  withoutOverflowForMovedMarker,
+  selectionInDocument,
   wordRangeAt,
 } from '@/features/terminal/terminal-selection';
 import type {
+  TerminalSelectionDocument,
   TerminalSelectionMarkerName,
   TerminalSelectionPosition,
   TerminalSelectionState,
 } from '@/features/terminal/terminal-selection';
 import type { TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 
-const MAX_PENDING_SHIFT_ROWS = 64;
-
-const rowsChangedBetween = (previous: TerminalSnapshot, current: TerminalSnapshot): boolean => {
-  if (previous.rows.length !== current.rows.length) {
-    return true;
-  }
-  return previous.rows.some((row, index) => {
-    return rowTextOf(row) !== rowTextOf(current.rows[index]);
-  });
-};
-
 export type TerminalSelectionController = {
   accept(): void;
   cancel(): void;
-  expectViewportShift(rows: number): void;
+  // The frozen copy the selection runs over once it loaded; null while the
+  // selection still sits on the live snapshot.
+  document: TerminalSelectionDocument | null;
   isAcceptable: boolean;
   moveActiveMarkerTo(position: TerminalSelectionPosition): void;
   selection: TerminalSelectionState | null;
@@ -44,21 +32,31 @@ export type TerminalSelectionController = {
 };
 
 export function useTerminalSelection(params: {
+  // Loads a scrollable copy of what the live screen shows plus the content
+  // around it (tmux history), so a selection can outgrow the screen. Resolving
+  // null keeps the selection on the live snapshot.
+  loadDocument?(): Promise<TerminalSelectionDocument | null>;
   onCopyText(text: string): Promise<void> | void;
   snapshot: TerminalSnapshot;
 }): TerminalSelectionController {
-  const { onCopyText, snapshot } = params;
+  const { loadDocument, onCopyText, snapshot } = params;
   const [selection, setSelection] = useState<TerminalSelectionState | null>(null);
-  const snapshotRef = useRef(snapshot);
+  const [selectionDocument, setSelectionDocument] = useState<TerminalSelectionDocument | null>(null);
+  const activeSnapshot = selectionDocument?.snapshot ?? snapshot;
+  const snapshotRef = useRef(activeSnapshot);
   const selectionRef = useRef(selection);
   const onCopyTextRef = useRef(onCopyText);
+  const loadDocumentRef = useRef(loadDocument);
+  const documentRequestIdRef = useRef(0);
   const previousAlternateRef = useRef(snapshot.isAlternateBuffer);
-  const previousSnapshotRef = useRef<TerminalSnapshot | null>(null);
-  const pendingShiftRowsRef = useRef(0);
 
   useEffect(() => {
-    snapshotRef.current = snapshot;
-  }, [snapshot]);
+    snapshotRef.current = activeSnapshot;
+  }, [activeSnapshot]);
+
+  useEffect(() => {
+    loadDocumentRef.current = loadDocument;
+  }, [loadDocument]);
 
   useEffect(() => {
     selectionRef.current = selection;
@@ -68,26 +66,63 @@ export function useTerminalSelection(params: {
     onCopyTextRef.current = onCopyText;
   }, [onCopyText]);
 
+  // Ends the selection and invalidates any document still loading for it.
+  const clearSelection = useCallback(() => {
+    documentRequestIdRef.current += 1;
+    setSelectionDocument(null);
+    setSelection(null);
+  }, []);
+
+  // The selection starts on the live screen at once; the document swaps in
+  // when it lands, carrying the markers over to the same on-screen cells.
+  const requestDocument = useCallback(() => {
+    documentRequestIdRef.current += 1;
+    const requestId = documentRequestIdRef.current;
+    const load = loadDocumentRef.current;
+    if (load === undefined) {
+      return;
+    }
+    const liveSnapshot = snapshotRef.current;
+    void load()
+      .then((loadedDocument) => {
+        if (loadedDocument === null || requestId !== documentRequestIdRef.current) {
+          return;
+        }
+        setSelection((previous) => {
+          if (previous === null) {
+            return previous;
+          }
+          return selectionInDocument(previous, { document: loadedDocument, liveSnapshot });
+        });
+        setSelectionDocument(loadedDocument);
+      })
+      .catch(() => {
+        return;
+      });
+  }, []);
+
   const startFromLastWord = useCallback(() => {
     const currentSnapshot = snapshotRef.current;
     const range = lastWordRange(currentSnapshot);
     if (range === null) {
       const line = currentSnapshot.firstLine + Math.max(currentSnapshot.rows.length - 1, 0);
       setSelection({ activeMarker: 'from', from: { col: 0, line }, to: { col: 0, line } });
-      return;
+    } else {
+      setSelection({ activeMarker: 'from', from: range.start, to: range.end });
     }
-    setSelection({ activeMarker: 'from', from: range.start, to: range.end });
-  }, []);
+    requestDocument();
+  }, [requestDocument]);
 
-  const startAtPosition = useCallback((position: TerminalSelectionPosition) => {
-    const range = wordRangeAt(snapshotRef.current, position);
-    setSelection({ activeMarker: 'to', from: range.start, to: range.end });
-  }, []);
+  const startAtPosition = useCallback(
+    (position: TerminalSelectionPosition) => {
+      const range = wordRangeAt(snapshotRef.current, position);
+      setSelection({ activeMarker: 'to', from: range.start, to: range.end });
+      requestDocument();
+    },
+    [requestDocument]
+  );
 
-  const cancel = useCallback(() => {
-    pendingShiftRowsRef.current = 0;
-    setSelection(null);
-  }, []);
+  const cancel = clearSelection;
 
   const setActiveMarker = useCallback((marker: TerminalSelectionMarkerName) => {
     setSelection((previous) => {
@@ -103,9 +138,7 @@ export function useTerminalSelection(params: {
       if (previous === null) {
         return previous;
       }
-      const clamped = clampSelectionOverflowing(previous, snapshotRef.current);
-      const moved = moveActiveMarker(clamped, clampPosition(position, snapshotRef.current));
-      return withoutOverflowForMovedMarker(moved);
+      return moveActiveMarker(clampSelection(previous, snapshotRef.current), position);
     });
   }, []);
 
@@ -119,73 +152,41 @@ export function useTerminalSelection(params: {
     });
   }, []);
 
-  // Registers the content shift a commanded remote scroll will repaint: rows >
-  // 0 mean the viewport content moves DOWN that many lines (tmux scroll-up).
-  // The shift is applied once the snapshot first changes after the command,
-  // which is the repaint landing; an unchanged snapshot keeps it waiting.
-  const expectViewportShift = useCallback((rows: number) => {
-    if (rows === 0) {
-      return;
-    }
-    pendingShiftRowsRef.current = Math.max(
-      -MAX_PENDING_SHIFT_ROWS,
-      Math.min(MAX_PENDING_SHIFT_ROWS, pendingShiftRowsRef.current + rows)
-    );
-  }, []);
-
   const accept = useCallback(() => {
     const current = selectionRef.current;
     if (current === null) {
       return;
     }
-    const text = extractSelectedText(snapshotRef.current, current);
+    const text = extractSelectedText(
+      snapshotRef.current,
+      clampSelection(current, snapshotRef.current)
+    );
     if (text.trim().length === 0) {
       return;
     }
     void Promise.resolve(onCopyTextRef.current(text)).catch(() => {
       return;
     });
-    setSelection(null);
-  }, []);
+    clearSelection();
+  }, [clearSelection]);
 
   useEffect(() => {
     if (previousAlternateRef.current === snapshot.isAlternateBuffer) {
       return;
     }
     previousAlternateRef.current = snapshot.isAlternateBuffer;
-    pendingShiftRowsRef.current = 0;
-    setSelection(null);
-  }, [snapshot.isAlternateBuffer]);
+    clearSelection();
+  }, [clearSelection, snapshot.isAlternateBuffer]);
 
-  useEffect(() => {
-    const previousSnapshot = previousSnapshotRef.current;
-    previousSnapshotRef.current = snapshot;
-    if (previousSnapshot === null || pendingShiftRowsRef.current === 0) {
-      return;
-    }
-    if (!rowsChangedBetween(previousSnapshot, snapshot)) {
-      return;
-    }
-    const current = selectionRef.current;
-    const rows = pendingShiftRowsRef.current;
-    pendingShiftRowsRef.current = 0;
-    if (current === null) {
-      return;
-    }
-    setSelection(
-      applyViewportShift(current, { previousSnapshot, rows, snapshot })
-    );
-  }, [snapshot]);
-
-  const clampedSelection = selection === null ? null : renderableSelectionOf(selection, snapshot);
+  const clampedSelection = selection === null ? null : clampSelection(selection, activeSnapshot);
   const isAcceptable =
     clampedSelection !== null &&
-    extractSelectedText(snapshot, clampedSelection).trim().length > 0;
+    extractSelectedText(activeSnapshot, clampedSelection).trim().length > 0;
 
   return {
     accept,
     cancel,
-    expectViewportShift,
+    document: selectionDocument,
     isAcceptable,
     moveActiveMarkerTo,
     selection: clampedSelection,

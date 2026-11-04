@@ -17,6 +17,8 @@ export type TerminalEmulator = {
   reset(): void;
 };
 
+export type TerminalEmulatorFactory = (params: { cols: number; rows: number }) => TerminalEmulator;
+
 export const createTerminalEmulator = (params: { cols: number; rows: number }): TerminalEmulator => {
   const terminal = new Terminal({
     allowProposedApi: true,
