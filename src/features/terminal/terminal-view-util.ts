@@ -50,10 +50,35 @@ export const terminalViewUtil = {
       return 0;
     }
     const markerTopPx = (markerLine - snapshot.firstLine) * lineHeight - offsetPx;
-    if (markerTopPx < lineHeight) {
+    // Both edge bands span two rows: a drag that stops one row short of the
+    // physical edge still triggers the scroll.
+    if (markerTopPx < 2 * lineHeight) {
       return -1;
     }
-    if (markerTopPx + lineHeight > viewportHeightPx - lineHeight) {
+    if (viewportHeightPx - markerTopPx <= 2 * lineHeight) {
+      return 1;
+    }
+    return 0;
+  },
+
+  // The finger's own edge proximity drives auto-scroll too: in relative mode
+  // the marker moves one row per line-height of finger travel, so a marker
+  // starting deep in the viewport can never reach the edge band within a
+  // single drag. The finger can always reach the physical edge; holding it
+  // there scrolls while the tick stretches the marker along.
+  edgeDirectionOf(params: {
+    lineHeight: number;
+    pointYpx: number;
+    viewportHeightPx: number;
+  }): number {
+    const { lineHeight, pointYpx, viewportHeightPx } = params;
+    if (lineHeight <= 0 || viewportHeightPx <= 0) {
+      return 0;
+    }
+    if (pointYpx < 2 * lineHeight) {
+      return -1;
+    }
+    if (viewportHeightPx - pointYpx <= 2 * lineHeight) {
       return 1;
     }
     return 0;

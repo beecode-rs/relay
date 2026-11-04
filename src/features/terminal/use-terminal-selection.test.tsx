@@ -215,3 +215,125 @@ describe('useTerminalSelection', () => {
     expect(current().selection).toBeNull();
   });
 });
+
+describe('useTerminalSelection remote viewport shifts', () => {
+  const rowsOf = (...texts: string[]): StyledRow[] => {
+    return texts.map((text) => {
+      return rowOf(text);
+    });
+  };
+
+  const startUpwardSelection = async (current: () => HookResult) => {
+    await act(async () => {
+      current().startAtPosition({ col: 0, line: 2 });
+    });
+    await act(async () => {
+      current().moveActiveMarkerTo({ col: 0, line: 0 });
+    });
+  };
+
+  it('remaps the inactive marker when a commanded shift repaints', async () => {
+    const { current, rerender } = await renderSelectionHook(
+      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
+    );
+    await startUpwardSelection(current);
+    expect(current().selection).toEqual({
+      activeMarker: 'from',
+      from: { col: 0, line: 0 },
+      to: { col: 0, line: 2 },
+    });
+
+    await act(async () => {
+      current().expectViewportShift(1);
+    });
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
+    });
+    expect(current().selection).toEqual({
+      activeMarker: 'from',
+      from: { col: 0, line: 0 },
+      to: { col: 0, line: 3 },
+    });
+  });
+
+  it('keeps a commanded shift pending until the rows change', async () => {
+    const { current, rerender } = await renderSelectionHook(
+      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
+    );
+    await startUpwardSelection(current);
+
+    await act(async () => {
+      current().expectViewportShift(1);
+    });
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d')));
+    });
+    expect(current().selection?.to).toEqual({ col: 0, line: 2 });
+
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
+    });
+    expect(current().selection?.to).toEqual({ col: 0, line: 3 });
+  });
+
+  it('accumulates tail rows past the viewport and copies the whole span', async () => {
+    const { current, onCopyText, rerender } = await renderSelectionHook(
+      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
+    );
+    await startUpwardSelection(current);
+
+    await act(async () => {
+      current().expectViewportShift(1);
+    });
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
+    });
+    await act(async () => {
+      current().expectViewportShift(1);
+    });
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')));
+    });
+    expect(current().selection).toEqual({
+      activeMarker: 'from',
+      from: { col: 0, line: 0 },
+      to: { col: Number.MAX_SAFE_INTEGER, line: 3 },
+    });
+
+    await act(async () => {
+      current().accept();
+    });
+    expect(onCopyText).toHaveBeenCalledWith('new2\nnew\nrow-a\nrow-b\nrow-c');
+  });
+
+  it('drops the tail when the end marker is dragged back inside', async () => {
+    const { current, rerender } = await renderSelectionHook(
+      snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d'))
+    );
+    await startUpwardSelection(current);
+    await act(async () => {
+      current().expectViewportShift(1);
+    });
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
+    });
+    await act(async () => {
+      current().expectViewportShift(1);
+    });
+    await act(async () => {
+      rerender(snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')));
+    });
+
+    await act(async () => {
+      current().switchActiveMarker();
+    });
+    await act(async () => {
+      current().moveActiveMarkerTo({ col: 0, line: 1 });
+    });
+    expect(current().selection).toEqual({
+      activeMarker: 'to',
+      from: { col: 0, line: 0 },
+      to: { col: 0, line: 1 },
+    });
+  });
+});

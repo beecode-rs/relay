@@ -1092,6 +1092,8 @@ describe('TerminalSession.scrollRows with tmux attached', () => {
   it('enables remote scrolling while tmux is attached', async () => {
     const { session } = await createTmuxHarness();
     expect(session.isRemoteScrollEnabled).toBe(true);
+    expect(session.isTmuxAttached).toBe(true);
+    expect(session.isTmuxViewportScrollEnabled).toBe(true);
   });
 
   it('disables remote scrolling again after detaching from tmux', async () => {
@@ -1099,6 +1101,16 @@ describe('TerminalSession.scrollRows with tmux attached', () => {
     bridge.queueExecResult({ exitCode: 0, stderr: '', stdout: 'tmux-detach=detached' });
     await session.detachTmuxSession();
     expect(session.isRemoteScrollEnabled).toBe(false);
+    expect(session.isTmuxAttached).toBe(false);
+    expect(session.isTmuxViewportScrollEnabled).toBe(false);
+  });
+
+  it('keeps viewport-following selection scrolls off while a mouse-tracking app owns the pane', async () => {
+    const { bridge, session } = await createTmuxHarness();
+    bridge.emitData('\x1b[?1000h');
+    await waitForEmulatorWrites();
+    expect(session.isTmuxAttached).toBe(true);
+    expect(session.isTmuxViewportScrollEnabled).toBe(false);
   });
 });
 
@@ -1107,6 +1119,7 @@ describe('TerminalSession.isRemoteScrollEnabled', () => {
     const { session } = createHarness();
     await session.start(profile);
     expect(session.isRemoteScrollEnabled).toBe(false);
+    expect(session.isTmuxAttached).toBe(false);
   });
 
   it('turns on when the host tracks the mouse', async () => {

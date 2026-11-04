@@ -1,14 +1,18 @@
 import type { StyledRow, TerminalSnapshot } from '@/services/terminal/terminal-serializer';
 
 import {
+  applyViewportShift,
   clampSelection,
+  clampSelectionOverflowing,
   comparePositions,
   extractSelectedText,
   lastWordRange,
   moveActiveMarker,
   orderedRangeOf,
+  renderableSelectionOf,
   rowSelectionOf,
   rowTextOf,
+  withoutOverflowForMovedMarker,
   wordRangeAt,
 } from '@/features/terminal/terminal-selection';
 import type {
@@ -316,5 +320,257 @@ describe('rowSelectionOf', () => {
       startColumn: 0,
       toMarkerColumn: null,
     });
+  });
+});
+
+describe('applyViewportShift', () => {
+  const rowsOf = (...texts: string[]): StyledRow[] => {
+    return texts.map((text) => {
+      return rowOf(text);
+    });
+  };
+
+  it('moves the inactive marker with the content', () => {
+    const state = selectionOf(position(0, 0), position(2, 3), 'from');
+    const shifted = applyViewportShift(state, {
+      previousSnapshot: snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d')),
+      rows: 1,
+      snapshot: snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')),
+    });
+    expect(shifted).toEqual({ activeMarker: 'from', from: position(0, 0), to: position(3, 3) });
+  });
+
+  it('keeps the active marker in place for the gesture to re-emit', () => {
+    const state = selectionOf(position(0, 0), position(2, 3), 'to');
+    const shifted = applyViewportShift(state, {
+      previousSnapshot: snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d')),
+      rows: 1,
+      snapshot: snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')),
+    });
+    expect(shifted.from).toEqual(position(1, 0));
+    expect(shifted.to).toEqual(position(2, 3));
+  });
+
+  it('captures tail rows as the pushed end leaves the viewport', () => {
+    const state = selectionOf(position(0, 0), position(3, 3), 'from');
+    const first = applyViewportShift(state, {
+      previousSnapshot: snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d')),
+      rows: 1,
+      snapshot: snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')),
+    });
+    expect(first.to).toEqual(position(4, 3));
+    expect(first.tailRows).toEqual(['row-d']);
+    const second = applyViewportShift(first, {
+      previousSnapshot: snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')),
+      rows: 1,
+      snapshot: snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')),
+    });
+    expect(second.to).toEqual(position(5, 3));
+    expect(second.tailRows).toEqual(['row-c', 'row-d']);
+  });
+
+  it('captures head rows as the pushed start leaves the viewport upward', () => {
+    const state = selectionOf(position(0, 0), position(3, 0), 'to');
+    const first = applyViewportShift(state, {
+      previousSnapshot: snapshotOf(rowsOf('row-a', 'row-b', 'row-c', 'row-d')),
+      rows: -1,
+      snapshot: snapshotOf(rowsOf('row-b', 'row-c', 'row-d', 'new')),
+    });
+    expect(first.from).toEqual(position(-1, 0));
+    expect(first.headRows).toEqual(['row-a']);
+    const second = applyViewportShift(first, {
+      previousSnapshot: snapshotOf(rowsOf('row-b', 'row-c', 'row-d', 'new')),
+      rows: -1,
+      snapshot: snapshotOf(rowsOf('row-c', 'row-d', 'new', 'new2')),
+    });
+    expect(second.from).toEqual(position(-2, 0));
+    expect(second.headRows).toEqual(['row-a', 'row-b']);
+  });
+
+  it('returns rows to the viewport on the reverse shift', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 0),
+      tailRows: ['row-c', 'row-d'],
+      to: position(5, 3),
+    };
+    const reversed = applyViewportShift(state, {
+      previousSnapshot: snapshotOf(rowsOf('new3', 'new2', 'new', 'row-a')),
+      rows: -1,
+      snapshot: snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')),
+    });
+    expect(reversed.to).toEqual(position(4, 3));
+    expect(reversed.tailRows).toEqual(['row-d']);
+  });
+
+  it('drops empty overflow instead of keeping empty arrays', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 0),
+      tailRows: ['row-c'],
+      to: position(4, 3),
+    };
+    const reversed = applyViewportShift(state, {
+      previousSnapshot: snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b')),
+      rows: -1,
+      snapshot: snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')),
+    });
+    expect(reversed.to).toEqual(position(3, 3));
+    expect(reversed.tailRows).toBeUndefined();
+  });
+});
+
+describe('renderableSelectionOf', () => {
+  const rowsOf = (...texts: string[]): StyledRow[] => {
+    return texts.map((text) => {
+      return rowOf(text);
+    });
+  };
+
+  it('clamps like clampSelection without overflow', () => {
+    const state = selectionOf(position(0, 2), position(2, 3));
+    const snapshot = snapshotOf(rowsOf('row-a', 'row-b', 'row-c'));
+    expect(renderableSelectionOf(state, snapshot)).toEqual(clampSelection(state, snapshot));
+  });
+
+  it('pins a tail-overflowing end onto the bottom row at its last column', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 1),
+      tailRows: ['row-c'],
+      to: position(4, 2),
+    };
+    const rendered = renderableSelectionOf(state, snapshotOf(rowsOf('new', 'row-a', 'row-b', 'row-c')));
+    expect(rendered.to).toEqual({ col: Number.MAX_SAFE_INTEGER, line: 3 });
+    expect(rendered.from).toEqual(position(0, 1));
+  });
+
+  it('pins a head-overflowing start onto the first row at column zero', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'to',
+      from: position(-2, 4),
+      headRows: ['row-a', 'row-b'],
+      to: position(2, 0),
+    };
+    const rendered = renderableSelectionOf(state, snapshotOf(rowsOf('row-c', 'row-d', 'row-e', 'row-f')));
+    expect(rendered.from).toEqual({ col: 0, line: 0 });
+    expect(rendered.to).toEqual(position(2, 0));
+  });
+});
+
+describe('clampSelectionOverflowing', () => {
+  const rowsOf = (...texts: string[]): StyledRow[] => {
+    return texts.map((text) => {
+      return rowOf(text);
+    });
+  };
+
+  it('keeps the shifted end as far as the tail rows track it', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 0),
+      tailRows: ['row-c', 'row-d'],
+      to: position(5, 2),
+    };
+    const clamped = clampSelectionOverflowing(state, snapshotOf(rowsOf('a', 'b', 'c', 'd')));
+    expect(clamped.to).toEqual(position(5, 2));
+  });
+
+  it('clamps a position beyond the tracked extent', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 0),
+      tailRows: ['row-c'],
+      to: position(9, 2),
+    };
+    const clamped = clampSelectionOverflowing(state, snapshotOf(rowsOf('a', 'b', 'c', 'd')));
+    expect(clamped.to).toEqual(position(4, 2));
+  });
+
+  it('falls back to clampSelection without overflow', () => {
+    const state = selectionOf(position(0, 0), position(9, 1));
+    expect(clampSelectionOverflowing(state, snapshotOf(rowsOf('a', 'b')))).toEqual(
+      clampSelection(state, snapshotOf(rowsOf('a', 'b')))
+    );
+  });
+});
+
+describe('withoutOverflowForMovedMarker', () => {
+  it('drops the tail when the moved marker is the ordered end', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'to',
+      from: position(0, 0),
+      headRows: ['above'],
+      tailRows: ['below'],
+      to: position(3, 2),
+    };
+    expect(withoutOverflowForMovedMarker(state)).toEqual({
+      activeMarker: 'to',
+      from: position(0, 0),
+      headRows: ['above'],
+      to: position(3, 2),
+    });
+  });
+
+  it('drops the head when the moved marker is the ordered start', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 0),
+      headRows: ['above'],
+      tailRows: ['below'],
+      to: position(3, 2),
+    };
+    expect(withoutOverflowForMovedMarker(state)).toEqual({
+      activeMarker: 'from',
+      from: position(0, 0),
+      tailRows: ['below'],
+      to: position(3, 2),
+    });
+  });
+
+  it('keeps a state without overflow as the same reference', () => {
+    const state = selectionOf(position(0, 0), position(1, 2));
+    expect(withoutOverflowForMovedMarker(state)).toBe(state);
+  });
+});
+
+describe('extractSelectedText with viewport overflow', () => {
+  const rowsOf = (...texts: string[]): StyledRow[] => {
+    return texts.map((text) => {
+      return rowOf(text);
+    });
+  };
+
+  it('appends the tail rows below the visible range', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 0),
+      tailRows: ['row-b', 'row-c'],
+      to: position(5, 2),
+    };
+    const snapshot = snapshotOf(rowsOf('new3', 'new2', 'new', 'row-a'));
+    expect(extractSelectedText(snapshot, state)).toBe('new3\nnew2\nnew\nrow-a\nrow-b\nrow-c');
+  });
+
+  it('prepends the head rows above the visible range', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'to',
+      from: position(-2, 0),
+      headRows: ['row-a', 'row-b'],
+      to: position(2, 1),
+    };
+    const snapshot = snapshotOf(rowsOf('row-c', 'row-d', 'row-e', 'row-f'));
+    expect(extractSelectedText(snapshot, state)).toBe('row-a\nrow-b\nrow-c\nrow-d\nro');
+  });
+
+  it('slices the boundary columns only on lines the range truly ends on', () => {
+    const state: TerminalSelectionState = {
+      activeMarker: 'from',
+      from: position(0, 3),
+      tailRows: ['row-c'],
+      to: position(4, 1),
+    };
+    const snapshot = snapshotOf(rowsOf('new2', 'new', 'row-a', 'row-b'));
+    expect(extractSelectedText(snapshot, state)).toBe('2\nnew\nrow-a\nrow-b\nrow-c');
   });
 });

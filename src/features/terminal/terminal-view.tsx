@@ -11,7 +11,7 @@ import type {
 
 import { constant } from '@/constants/constant';
 
-import { rowSelectionOf, rowWidthOf } from '@/features/terminal/terminal-selection';
+import { rowSelectionOf, rowTextOf, rowWidthOf } from '@/features/terminal/terminal-selection';
 import type {
   TerminalSelectionPosition,
   TerminalSelectionState,
@@ -37,11 +37,13 @@ export type TerminalViewProps = TerminalFontProps & {
   followRequestCount?: number;
   isCursorVisible: boolean;
   isRemoteScrollEnabled?: boolean;
+  isRemoteSelectionScrollEnabled?: boolean;
   onPress?(): void;
   onScrollRows?(params: { rows: number; x?: number; y?: number }): void;
   onSelectionLongPress?(position: TerminalSelectionPosition): void;
   onSelectionMarkerSwitch?(): void;
   onSelectionMove?(position: TerminalSelectionPosition): void;
+  onSelectionScrollRows?(params: { rows: number }): void;
   onSurfaceLayout?(size: { heightPx: number; widthPx: number }): void;
   selection?: TerminalSelectionState | null;
   selectionMoveMode?: TerminalSelectionMoveMode;
@@ -205,12 +207,14 @@ export function TerminalView({
   fontSize,
   isCursorVisible,
   isRemoteScrollEnabled = false,
+  isRemoteSelectionScrollEnabled = false,
   lineHeight,
   onPress,
   onScrollRows,
   onSelectionLongPress,
   onSelectionMarkerSwitch,
   onSelectionMove,
+  onSelectionScrollRows,
   onSurfaceLayout,
   selection = null,
   selectionMoveMode = 'relative',
@@ -239,6 +243,8 @@ export function TerminalView({
   const selectionAutoScrollTickRef = useRef<() => void>(() => {
     return;
   });
+  const snapshotRowsTextRef = useRef('');
+  const lastCommandedRowsTextRef = useRef<string | null>(null);
 
   // tmux stays on the normal buffer, so the alternate-buffer flag alone never
   // routes its swipes to the remote scroll handler - the session reports that
@@ -263,7 +269,9 @@ export function TerminalView({
     activeMarkerPosition,
     charWidthPx: charWidthPx ?? 0,
     isRemoteScroll,
+    isRemoteSelectionScrollEnabled,
     lineHeight,
+    onSelectionScrollRows,
     scrollbackCount,
     selectionMoveMode,
     snapshot,
@@ -274,12 +282,18 @@ export function TerminalView({
       activeMarkerPosition,
       charWidthPx: charWidthPx ?? 0,
       isRemoteScroll,
+      isRemoteSelectionScrollEnabled,
       lineHeight,
+      onSelectionScrollRows,
       scrollbackCount,
       selectionMoveMode,
       snapshot,
     };
   });
+
+  useEffect(() => {
+    snapshotRowsTextRef.current = snapshot.rows.map(rowTextOf).join('\n');
+  }, [snapshot]);
 
   const cancelLongPress = useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -343,6 +357,54 @@ export function TerminalView({
     [selectionPositionFromMappingPoint]
   );
 
+  // Stretches the gesture base a row toward an edge so the marker keeps
+  // extending while auto-scroll moves the content under it instead of the
+  // finger.
+  const extendSelectionGestureBase = useCallback((direction: number) => {
+    const mapping = selectionMappingRef.current;
+    if (mapping.selectionMoveMode === 'follow') {
+      const dragPoint = selectionGrantPointRef.current;
+      if (dragPoint !== null) {
+        dragPoint.y += direction * mapping.lineHeight;
+      }
+      return;
+    }
+    const markerStart = selectionGestureMarkerRef.current;
+    if (markerStart !== null) {
+      markerStart.line += direction;
+    }
+  }, []);
+
+  // The finger's edge proximity outranks the marker row: while a drag is
+  // active, holding the finger at the physical edge scrolls even when the
+  // relative-mode marker could not travel that far. Without a live gesture
+  // (or with the finger mid-screen) the marker row decides, which also keeps
+  // the flung-marker catch-up working.
+  const resolveSelectionAutoScrollDirection = useCallback(
+    (markerLine: number): number => {
+      const mapping = selectionMappingRef.current;
+      const dragPoint = selectionGrantPointRef.current;
+      if (dragPoint !== null) {
+        const fingerDirection = terminalViewUtil.edgeDirectionOf({
+          lineHeight: mapping.lineHeight,
+          pointYpx: dragPoint.y + selectionGestureDeltaRef.current.dy,
+          viewportHeightPx: viewportHeightPxRef.current,
+        });
+        if (fingerDirection !== 0) {
+          return fingerDirection;
+        }
+      }
+      return terminalViewUtil.autoScrollDirectionOf({
+        lineHeight: mapping.lineHeight,
+        markerLine,
+        offsetPx: scrollOffsetPxRef.current,
+        snapshot: mapping.snapshot,
+        viewportHeightPx: viewportHeightPxRef.current,
+      });
+    },
+    []
+  );
+
   const stopSelectionAutoScroll = useCallback(() => {
     if (selectionAutoScrollTimerRef.current === null) {
       return;
@@ -376,23 +438,21 @@ export function TerminalView({
     scrollRef.current?.scrollTo({ animated: true, y: targetOffsetPx });
   }, []);
 
-  // Auto-scroll only applies to the local ScrollView surface: the remote
-  // surface shows just the remote viewport, so there is no local content to
-  // reveal while the marker rides the screen edge.
+  // Auto-scroll drives the local ScrollView by revealing rows, and the tmux
+  // remote surface by commanding remote scrolls one repaint ahead: the tick is
+  // gated until the snapshot reflects the previous command. Alternate-buffer
+  // programs without tmux (vim, less) keep the no-op behavior - their scroll
+  // semantics are the app's own, not the viewport's.
   const updateSelectionAutoScroll = useCallback(
     (markerLine: number) => {
       const mapping = selectionMappingRef.current;
-      if (mapping.isRemoteScroll) {
+      const isRemoteSelectionScrollReady =
+        mapping.isRemoteSelectionScrollEnabled && mapping.onSelectionScrollRows !== undefined;
+      if (mapping.isRemoteScroll && !isRemoteSelectionScrollReady) {
         stopSelectionAutoScroll();
         return;
       }
-      const direction = terminalViewUtil.autoScrollDirectionOf({
-        lineHeight: mapping.lineHeight,
-        markerLine,
-        offsetPx: scrollOffsetPxRef.current,
-        snapshot: mapping.snapshot,
-        viewportHeightPx: viewportHeightPxRef.current,
-      });
+      const direction = resolveSelectionAutoScrollDirection(markerLine);
       if (direction === 0) {
         stopSelectionAutoScroll();
         return;
@@ -403,7 +463,7 @@ export function TerminalView({
         }, constant.terminal.gesture.autoScrollIntervalMs);
       }
     },
-    [stopSelectionAutoScroll]
+    [resolveSelectionAutoScrollDirection, stopSelectionAutoScroll]
   );
 
   const emitSelectionPosition = useCallback(
@@ -425,15 +485,24 @@ export function TerminalView({
       stopSelectionAutoScroll();
       return;
     }
-    const direction = terminalViewUtil.autoScrollDirectionOf({
-      lineHeight: mapping.lineHeight,
-      markerLine: markerPosition.line,
-      offsetPx: scrollOffsetPxRef.current,
-      snapshot: mapping.snapshot,
-      viewportHeightPx: viewportHeightPxRef.current,
-    });
+    const direction = resolveSelectionAutoScrollDirection(markerPosition.line);
     if (direction === 0) {
       stopSelectionAutoScroll();
+      return;
+    }
+    if (mapping.isRemoteScroll) {
+      // One remote scroll in flight: the next command waits until the
+      // snapshot changed, which is tmux's repaint of the previous scroll.
+      if (snapshotRowsTextRef.current === lastCommandedRowsTextRef.current) {
+        return;
+      }
+      lastCommandedRowsTextRef.current = snapshotRowsTextRef.current;
+      mapping.onSelectionScrollRows?.({ rows: direction });
+      extendSelectionGestureBase(direction);
+      const extendedPosition = selectionDragMarkerPosition();
+      if (extendedPosition !== null) {
+        emitSelectionPosition(extendedPosition);
+      }
       return;
     }
     const markerTopPx =
@@ -454,17 +523,7 @@ export function TerminalView({
       scrollRef.current?.scrollTo({ animated: false, y: nextOffsetPx });
     }
     if (!isCatchUpOnly) {
-      if (mapping.selectionMoveMode === 'follow') {
-        const dragPoint = selectionGrantPointRef.current;
-        if (dragPoint !== null) {
-          dragPoint.y += direction * mapping.lineHeight;
-        }
-      } else {
-        const markerStart = selectionGestureMarkerRef.current;
-        if (markerStart !== null) {
-          markerStart.line += direction;
-        }
-      }
+      extendSelectionGestureBase(direction);
       const extendedPosition = selectionDragMarkerPosition();
       if (extendedPosition !== null) {
         emitSelectionPosition(extendedPosition);
@@ -473,7 +532,7 @@ export function TerminalView({
     if (!isOffsetChanged) {
       stopSelectionAutoScroll();
     }
-  }, [emitSelectionPosition, selectionDragMarkerPosition, stopSelectionAutoScroll]);
+  }, [emitSelectionPosition, extendSelectionGestureBase, resolveSelectionAutoScrollDirection, selectionDragMarkerPosition, stopSelectionAutoScroll]);
 
   useEffect(() => {
     selectionAutoScrollTickRef.current = runSelectionAutoScrollTick;
@@ -518,8 +577,13 @@ export function TerminalView({
       });
     };
     const responder = PanResponder.create({
+      // A held finger jitters vertically by fractions of a pixel; claiming on
+      // any dy at all hands the gesture to onPanResponderMove, which cancels
+      // the pending long-press, so a held finger could never start a
+      // selection. Claim only once the drag crosses the long-press slop, the
+      // same distance at which the overlay itself abandons the press.
       onMoveShouldSetPanResponder: (_event, gestureState) => {
-        return Math.abs(gestureState.dy) > 0;
+        return Math.abs(gestureState.dy) >= constant.terminal.gesture.longPressSlopPx;
       },
       onPanResponderMove: (event, gestureState) => {
         cancelLongPress();

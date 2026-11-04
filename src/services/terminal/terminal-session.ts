@@ -82,7 +82,7 @@ export class TerminalSession {
   private tmuxCheckSeq = 0;
   private tmuxAutoAttach: Promise<void> = Promise.resolve();
   private shouldAttachTmux = true;
-  private isTmuxAttached = false;
+  private tmuxAttached = false;
   private pendingTmuxScrollRows = 0;
   private isTmuxScrollFlushScheduled = false;
 
@@ -108,7 +108,18 @@ export class TerminalSession {
   }
 
   get isRemoteScrollEnabled(): boolean {
-    return this.isTmuxAttached || this.isMouseTrackingEnabled;
+    return this.tmuxAttached || this.isMouseTrackingEnabled;
+  }
+
+  get isTmuxAttached(): boolean {
+    return this.tmuxAttached;
+  }
+
+  // Selection auto-scroll needs scrolls that shift the tmux viewport in
+  // copy-mode: with mouse tracking on, scrollRows routes to wheel events the
+  // inner app interprets however it likes, so the selection cannot follow.
+  get isTmuxViewportScrollEnabled(): boolean {
+    return this.tmuxAttached && !this.isMouseTrackingEnabled;
   }
 
   scrollRows(params: { rows: number; x?: number; y?: number }): void {
@@ -124,7 +135,7 @@ export class TerminalSession {
       });
       return;
     }
-    if (this.isTmuxAttached) {
+    if (this.tmuxAttached) {
       this.queueTmuxScrollRows(params.rows);
       return;
     }
@@ -206,7 +217,7 @@ export class TerminalSession {
     this.teardownConnection();
     this.cursorTracker.reset();
     this.batcher.clear();
-    this.isTmuxAttached = false;
+    this.tmuxAttached = false;
     this.pendingTmuxScrollRows = 0;
     this.emulator = this.createEmulator(this.size);
     this.updateState({ status: 'connecting' });
@@ -377,7 +388,7 @@ export class TerminalSession {
     // shell while it is attached; a detached shell would instead switch some
     // other client (a zombie from a dropped connection, another device), so it
     // attaches in the shell itself.
-    if (!this.isTmuxAttached) {
+    if (!this.tmuxAttached) {
       return this.attachTmuxSessionInShell({ sessionName: params.sessionName });
     }
     try {
@@ -408,7 +419,7 @@ export class TerminalSession {
       return false;
     }
     // Nothing of this shell's to detach; the newest client belongs to someone else.
-    if (!this.isTmuxAttached) {
+    if (!this.tmuxAttached) {
       return true;
     }
     try {
@@ -418,7 +429,7 @@ export class TerminalSession {
       }
       const outcome = tmuxAttachUtil.toDetachOutcome({ stdout: result.stdout });
       if (outcome.kind === 'detached') {
-        this.isTmuxAttached = false;
+        this.tmuxAttached = false;
       }
 
       return outcome.kind !== 'unknown';
@@ -481,9 +492,9 @@ export class TerminalSession {
 
   private attachTmuxSessionInShell(params: { sessionName: string }): boolean {
     const attachCommand = tmuxAttachUtil.toAttachSessionCommand({ sessionName: params.sessionName });
-    this.isTmuxAttached = this.typeShellLine(attachCommand);
+    this.tmuxAttached = this.typeShellLine(attachCommand);
 
-    return this.isTmuxAttached;
+    return this.tmuxAttached;
   }
 
   // Internal command lines (tmux attach, history setup) are typed into the
@@ -538,7 +549,7 @@ export class TerminalSession {
   // The listed current session is the newest client's; while this shell is
   // detached that client is someone else's, so this shell has no current one.
   private toOwnCurrentSessionName(newestClientSessionName: string | null): string | null {
-    if (!this.isTmuxAttached) {
+    if (!this.tmuxAttached) {
       return null;
     }
 
@@ -639,7 +650,7 @@ export class TerminalSession {
           preferredSessionName: this.profile?.lastTmuxSessionName,
           startPath: this.profile?.remotePath,
         });
-        this.isTmuxAttached = this.typeShellLine(attachCommand);
+        this.tmuxAttached = this.typeShellLine(attachCommand);
         return;
       }
       if (probe.tmuxStatus !== 'missing') {

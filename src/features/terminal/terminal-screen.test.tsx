@@ -131,6 +131,7 @@ const createFakeSession = (
   initialStatus?: TerminalSessionState['status'],
   liveProfile?: SshConnectOptions,
   isRemoteScrollEnabled = false,
+  isTmuxAttached = false,
 ): FakeSession => {
   const listeners = new Set<(state: TerminalSessionState) => void>();
   const tracked = { live: liveProfile ?? null, state: { status: initialStatus ?? 'idle' } as TerminalSessionState };
@@ -169,6 +170,8 @@ const createFakeSession = (
     dismissedTmuxPromptCount: 0,
     isApplicationCursorKeys: false,
     isRemoteScrollEnabled,
+    isTmuxAttached,
+    isTmuxViewportScrollEnabled: isTmuxAttached,
     isActiveFor: (options) => {
       return tracked.live !== null && isActiveStatus(tracked.state.status) && sameIdentity(tracked.live, options);
     },
@@ -2226,5 +2229,121 @@ describe('TerminalScreen selection', () => {
       expect(Clipboard.setStringAsync).toHaveBeenCalledWith('red');
     });
     expect(screen.getByText('red').props.style.backgroundColor).toBe(constant.terminal.bg);
+  });
+
+  it('scrolls the tmux viewport when a dragged selection marker rides the screen edge', async () => {
+    const session = createFakeSession(undefined, undefined, true, true);
+    const buildViewportSnapshot = (topText: string): TerminalSnapshot => {
+      return {
+        cursor: { x: 0, y: 0 },
+        firstLine: 0,
+        isAlternateBuffer: true,
+        rows: Array.from({ length: 10 }, (_unused, index) => {
+          const text = index === 0 ? topText : `row-${index}`;
+          return {
+            segments: [
+              { bold: false, fgColor: undefined, inverse: false, italic: false, text, underline: false },
+            ],
+          };
+        }),
+        viewportRowCount: 10,
+      };
+    };
+    let currentSnapshot = buildViewportSnapshot('row-0');
+    session.snapshot = () => {
+      return currentSnapshot;
+    };
+    session.drainPendingOutput = () => {
+      return null;
+    };
+    await renderScreen(session);
+    session.emitState({ status: 'connected' });
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-scroll-remote')).toBeTruthy();
+    });
+    screen.getByTestId('terminal-scroll-remote').props.onLayout({
+      nativeEvent: { layout: { height: 10 * 18, width: 400, x: 0, y: 0 } },
+    });
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Extra key layers' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Extra key layers' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Start selection' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-selection-overlay').props.onStartShouldSetResponder).toBeDefined();
+    });
+
+    // Relative mode by default: the marker moves by the dragged rows, so the
+    // active from-marker at row 9 reaches the top edge after nine rows up.
+    const overlay = screen.getByTestId('terminal-selection-overlay');
+    overlay.props.onResponderGrant({
+      nativeEvent: { locationX: 30, locationY: 150 },
+      touchHistory: {
+        indexOfSingleActiveTouch: 0,
+        mostRecentTimeStamp: 100,
+        numberActiveTouches: 1,
+        touchBank: [
+          {
+            currentPageX: 30,
+            currentPageY: 150,
+            previousPageX: 30,
+            previousPageY: 150,
+            touchActive: true,
+          },
+        ],
+      },
+    });
+    await act(async () => {
+      overlay.props.onResponderMove({
+        touchHistory: {
+          indexOfSingleActiveTouch: 0,
+          mostRecentTimeStamp: 101,
+          numberActiveTouches: 1,
+          touchBank: [
+            {
+              currentPageX: 30,
+              currentPageY: 150 - 9 * 18,
+              currentTimeStamp: 101,
+              previousPageX: 30,
+              previousPageY: 150,
+              touchActive: true,
+            },
+          ],
+        },
+      });
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 130);
+      });
+    });
+    expect(session.scrolledRows).toContain(-1);
+
+    // The repaint of the first scroll lands: the gate opens for the next one.
+    currentSnapshot = buildViewportSnapshot('revealed');
+    session.drainPendingOutput = () => {
+      return 'repaint';
+    };
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 130);
+      });
+    });
+    session.drainPendingOutput = () => {
+      return null;
+    };
+    const scrolledCount = session.scrolledRows.filter((rows) => {
+      return rows === -1;
+    }).length;
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 130);
+      });
+    });
+    expect(
+      session.scrolledRows.filter((rows) => {
+        return rows === -1;
+      }).length
+    ).toBeGreaterThan(scrolledCount);
   });
 });

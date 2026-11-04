@@ -70,6 +70,8 @@ export type TerminalScreenSession = Pick<
   | 'isApplicationCursorKeys'
   | 'isActiveFor'
   | 'isRemoteScrollEnabled'
+  | 'isTmuxAttached'
+  | 'isTmuxViewportScrollEnabled'
   | 'killTmuxSession'
   | 'listRemoteDirectories'
   | 'listTmuxSessions'
@@ -595,6 +597,14 @@ export function TerminalScreen({
 
   const handleScrollRows = (params: { rows: number; x?: number; y?: number }) => {
     activeSession?.scrollRows({ rows: params.rows, x: params.x, y: params.y });
+  };
+
+  // Selection auto-scroll commands remote scrolls: the session scrolls the
+  // tmux viewport and the selection registers the content shift the repaint
+  // will apply (scroll-up moves the content DOWN one row per scrolled row).
+  const handleSelectionScrollRows = (params: { rows: number }) => {
+    terminalSelection.expectViewportShift(-params.rows);
+    activeSession?.scrollRows({ rows: params.rows });
   };
 
   const terminalSelection = useTerminalSelection({
@@ -1194,11 +1204,13 @@ export function TerminalScreen({
               fontSize={fontSize}
               isCursorVisible
               isRemoteScrollEnabled={activeSession?.isRemoteScrollEnabled ?? false}
+              isRemoteSelectionScrollEnabled={activeSession?.isTmuxViewportScrollEnabled ?? false}
               lineHeight={lineHeight}
               onScrollRows={handleScrollRows}
               onSelectionLongPress={terminalSelection.startAtPosition}
               onSelectionMarkerSwitch={terminalSelection.switchActiveMarker}
               onSelectionMove={terminalSelection.moveActiveMarkerTo}
+              onSelectionScrollRows={handleSelectionScrollRows}
               selection={terminalSelection.selection}
               selectionMoveMode={
                 preference.isSelectionFollowFingerEnabled ? 'follow' : 'relative'

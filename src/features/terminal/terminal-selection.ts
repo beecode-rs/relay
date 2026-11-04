@@ -13,6 +13,11 @@ export type TerminalSelectionState = {
   activeMarker: TerminalSelectionMarkerName;
   from: TerminalSelectionPosition;
   to: TerminalSelectionPosition;
+  // Remote-viewport selections can outgrow the snapshot: rows the tmux
+  // viewport scrolled past are kept here, ordered nearest-viewport first for
+  // tail rows and nearest-viewport last for head rows.
+  headRows?: readonly string[];
+  tailRows?: readonly string[];
 };
 
 export type TerminalSelectionRange = {
@@ -158,13 +163,14 @@ export const moveActiveMarker = (
     return moved;
   }
   return {
+    ...moved,
     activeMarker: flipMarker(state.activeMarker),
     from: moved.to,
     to: moved.from,
   };
 };
 
-const clampPosition = (
+export const clampPosition = (
   position: TerminalSelectionPosition,
   snapshot: TerminalSnapshot
 ): TerminalSelectionPosition => {
@@ -192,21 +198,189 @@ export const clampSelection = (
   return { ...state, from, to };
 };
 
+// Like clampSelection, but a position the viewport shift pushed past an edge
+// stays out of range as far as the recorded overflow rows track it; only the
+// inactive marker ever earns that extent, and moves clamp it back in.
+export const clampSelectionOverflowing = (
+  state: TerminalSelectionState,
+  snapshot: TerminalSnapshot
+): TerminalSelectionState => {
+  const headExtent = state.headRows?.length ?? 0;
+  const tailExtent = state.tailRows?.length ?? 0;
+  if (headExtent === 0 && tailExtent === 0) {
+    return clampSelection(state, snapshot);
+  }
+  const firstLine = snapshot.firstLine;
+  const lastLine = lastLineOf(snapshot);
+  const clampOverflowingPosition = (
+    position: TerminalSelectionPosition
+  ): TerminalSelectionPosition => {
+    const line = Math.min(Math.max(position.line, firstLine - headExtent), lastLine + tailExtent);
+    const row = snapshot.rows[line - snapshot.firstLine];
+    if (row === undefined) {
+      return line === position.line ? position : { ...position, line };
+    }
+    const col = Math.min(Math.max(position.col, 0), rowWidthOf(row));
+    if (line === position.line && col === position.col) {
+      return position;
+    }
+    return { col, line };
+  };
+  const from = clampOverflowingPosition(state.from);
+  const to = clampOverflowingPosition(state.to);
+  if (from === state.from && to === state.to) {
+    return state;
+  }
+  return { ...state, from, to };
+};
+
+const lastLineOf = (snapshot: TerminalSnapshot): number => {
+  return snapshot.firstLine + snapshot.rows.length - 1;
+};
+
+const isFromOrderedFirst = (state: TerminalSelectionState): boolean => {
+  return comparePositions(state.from, state.to) <= 0;
+};
+
+const overflowRowsOf = (params: {
+  capturedFromEnd: boolean;
+  currentRows: readonly string[];
+  previousRows: readonly StyledRow[];
+  wantedCount: number;
+}): readonly string[] => {
+  const { capturedFromEnd, currentRows, previousRows, wantedCount } = params;
+  if (wantedCount === currentRows.length) {
+    return currentRows;
+  }
+  if (wantedCount < currentRows.length) {
+    const removedCount = currentRows.length - wantedCount;
+    return capturedFromEnd ? currentRows.slice(removedCount) : currentRows.slice(0, wantedCount);
+  }
+  const grownCount = wantedCount - currentRows.length;
+  const fromIndex = capturedFromEnd ? previousRows.length - grownCount : 0;
+  const capturedRows = previousRows.slice(fromIndex, fromIndex + grownCount).map(rowTextOf);
+  return capturedFromEnd ? [...capturedRows, ...currentRows] : [...currentRows, ...capturedRows];
+};
+
+// A commanded remote scroll repaints the tmux viewport by shifting its content
+// in place: scroll-up moves every row down, scroll-down moves every row up.
+// The inactive marker keeps pointing at the same content by moving with the
+// shift; rows it passes beyond the snapshot edge are captured into head/tail
+// overflow so a selection can span many viewport lengths.
+export const applyViewportShift = (
+  state: TerminalSelectionState,
+  params: { previousSnapshot: TerminalSnapshot; rows: number; snapshot: TerminalSnapshot }
+): TerminalSelectionState => {
+  const { previousSnapshot, rows, snapshot } = params;
+  if (rows === 0) {
+    return state;
+  }
+  const inactiveMarker = state.activeMarker === 'from' ? 'to' : 'from';
+  const inactivePosition = state[inactiveMarker];
+  const shiftedPosition = { ...inactivePosition, line: inactivePosition.line + rows };
+  const shiftedState = { ...state, [inactiveMarker]: shiftedPosition };
+  const range = orderedRangeOf(shiftedState);
+  const tailRows = overflowRowsOf({
+    capturedFromEnd: true,
+    currentRows: shiftedState.tailRows ?? [],
+    previousRows: previousSnapshot.rows,
+    wantedCount: Math.max(0, range.end.line - lastLineOf(snapshot)),
+  });
+  const headRows = overflowRowsOf({
+    capturedFromEnd: false,
+    currentRows: shiftedState.headRows ?? [],
+    previousRows: previousSnapshot.rows,
+    wantedCount: Math.max(0, snapshot.firstLine - range.start.line),
+  });
+  return {
+    ...shiftedState,
+    headRows: headRows.length > 0 ? headRows : undefined,
+    tailRows: tailRows.length > 0 ? tailRows : undefined,
+  };
+};
+
+// Keeps a marker that the shift pushed past the snapshot edge addressable: it
+// clamps onto the edge row with an extreme column so the whole edge row stays
+// highlighted while its true position rides the overflow rows. The returned
+// state drops the overflow fields - rendering only needs viewport positions.
+export const renderableSelectionOf = (
+  state: TerminalSelectionState,
+  snapshot: TerminalSnapshot
+): TerminalSelectionState => {
+  const clamped = clampSelection(state, snapshot);
+  const headRows = state.headRows ?? [];
+  const tailRows = state.tailRows ?? [];
+  if (headRows.length === 0 && tailRows.length === 0) {
+    return clamped;
+  }
+  const range = orderedRangeOf(state);
+  const fromIsFirst = isFromOrderedFirst(state);
+  let from = clamped.from;
+  let to = clamped.to;
+  if (tailRows.length > 0 && range.end.line > lastLineOf(snapshot)) {
+    const pinned = { col: Number.MAX_SAFE_INTEGER, line: lastLineOf(snapshot) };
+    if (fromIsFirst) {
+      to = pinned;
+    } else {
+      from = pinned;
+    }
+  }
+  if (headRows.length > 0 && range.start.line < snapshot.firstLine) {
+    const pinned = { col: 0, line: snapshot.firstLine };
+    if (fromIsFirst) {
+      from = pinned;
+    } else {
+      to = pinned;
+    }
+  }
+  return { activeMarker: state.activeMarker, from, to };
+};
+
+// Marker moves address viewport rows only: beyond-edge content is reachable
+// through scrolls, not drags, so a moved marker clamps into the snapshot while
+// the overflow on its own side collapses back into the visible range.
+export const withoutOverflowForMovedMarker = (
+  state: TerminalSelectionState
+): TerminalSelectionState => {
+  const activeIsEnd = isFromOrderedFirst(state) ? state.activeMarker === 'to' : state.activeMarker === 'from';
+  if (activeIsEnd && (state.tailRows?.length ?? 0) > 0) {
+    return {
+      ...(state.headRows !== undefined && state.headRows.length > 0 ? { headRows: state.headRows } : {}),
+      activeMarker: state.activeMarker,
+      from: state.from,
+      to: state.to,
+    };
+  }
+  if (!activeIsEnd && (state.headRows?.length ?? 0) > 0) {
+    return {
+      activeMarker: state.activeMarker,
+      from: state.from,
+      ...(state.tailRows !== undefined && state.tailRows.length > 0 ? { tailRows: state.tailRows } : {}),
+      to: state.to,
+    };
+  }
+  return state;
+};
+
 export const extractSelectedText = (
   snapshot: TerminalSnapshot,
   state: TerminalSelectionState
 ): string => {
   const range = orderedRangeOf(state);
-  const lineCount = range.end.line - range.start.line + 1;
+  const firstLine = snapshot.firstLine;
+  const lastLine = lastLineOf(snapshot);
+  const startLine = Math.max(range.start.line, firstLine);
+  const endLine = Math.min(range.end.line, lastLine);
+  const lineCount = Math.max(0, endLine - startLine + 1);
   const lines = Array.from({ length: lineCount }, (_unused, index) => {
-    const line = range.start.line + index;
+    const line = startLine + index;
     const row = snapshot.rows[line - snapshot.firstLine];
     if (row === undefined) {
       return '';
     }
     const text = rowTextOf(row);
-    const isFirstLine = index === 0;
-    const isLastLine = index === lineCount - 1;
+    const isFirstLine = line === range.start.line;
+    const isLastLine = line === range.end.line;
     if (!isFirstLine && !isLastLine) {
       return text;
     }
@@ -224,7 +398,19 @@ export const extractSelectedText = (
       : text.length;
     return text.slice(sliceStart, sliceEnd);
   });
-  return lines.join('\n');
+  const headRows = state.headRows ?? [];
+  const tailRows = state.tailRows ?? [];
+  const sections: string[] = [];
+  if (headRows.length > 0) {
+    sections.push(headRows.join('\n'));
+  }
+  if (lines.length > 0) {
+    sections.push(lines.join('\n'));
+  }
+  if (tailRows.length > 0) {
+    sections.push(tailRows.join('\n'));
+  }
+  return sections.join('\n');
 };
 
 export const rowSelectionOf = (
